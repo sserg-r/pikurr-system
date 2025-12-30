@@ -1,0 +1,32 @@
+# Игнорируем старые исходники
+database/
+models/
+pikurr_qgis/
+pyscr/
+sqlscripts/old/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Игнорируем локальные виртуальные окружения и настройки
+.venv/
+env/
+venv/
+.env
+.env.*
+.git/
+.gitignore
+.clinerules
+.vscode/
+geoserver.env
+configs.ini
+
+# Игнорируем логи и временные файлы
+logs/
+temp/
+*.log
+
+# Игнорируем файлы, которые мы создаем для тестов, но не нужны в проде
+test_*.py
+debug_*.py

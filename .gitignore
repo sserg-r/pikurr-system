@@ -1,0 +1,23 @@
+# 1. ЗАПРЕЩАЕМ ВСЁ ПО УМОЛЧАНИЮ
+*
+# 2. РАЗРЕШАЕМ КОРНЕВЫЕ ФАЙЛЫ
+!.gitignore
+!docker-compose.yml
+!.env_example
+!.dockerignore
+# 3. РАЗРЕШАЕМ ВХОД В ПАПКУ PIKURR
+!PIKURR/
+# 4. РАЗРЕШАЕМ ФАЙЛЫ ВНУТРИ PIKURR
+!PIKURR/Dockerfile
+!PIKURR/requirements.txt
+!PIKURR/pipeline.py
+!PIKURR/dashboard.py
+# Разрешаем папку src и всё её содержимое
+!PIKURR/src/
+!PIKURR/src/**
+# 5. ЧИСТИМ МУСОР (Даже в разрешенных папках)
+# Эти правила должны быть ниже разрешающих, чтобы перекрыть их
+PIKURR/docker-compose.yml
+__pycache__/
+*.pyc
+.DS_Store

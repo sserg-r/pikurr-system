@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  # 1. База данных PostGIS
+  db:
+    image: postgis/postgis:15-3.3
+    env_file: .env
+    ports:
+      - "5444:5432"  # Чтобы можно было подключиться из QGIS локально
+    volumes:
+      - ${HOST_PG_DATA}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. TensorFlow Serving (Модели)
+  tf-serving:
+    image: tensorflow/serving:2.19.0-gpu
+    env_file: .env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ports:
+      - "8500:8500" # gRPC
+      - "8501:8501" # REST
+    volumes:
+      # Монтируем папку с моделями. Внутри контейнера путь должен быть /models/two
+      - ${HOST_MODEL_DIR}:/models
+    command:
+      - '--model_config_file=/models/models.config'
+      - '--model_config_file_poll_wait_seconds=60'
+      # Ограничиваем память, чтобы не съел все (актуально если запускаете что-то еще)
+      - '--per_process_gpu_memory_fraction=0.7'
+      - '--enable_batching=true'
+      - '--batching_parameters_file=/models/batching_parameters.txt'
+      - '--num_batch_threads=4'
+    healthcheck:
+      test: ["CMD-SHELL", "apt-get update && apt-get install -y netcat && nc -z localhost 8500"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  # 3. ETL Воркер (PIKURR)
+  etl:
+    build: 
+      context: ./PIKURR
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      tf-serving:
+        condition: service_started
+    volumes:
+      # Монтируем входные данные (Read-Only)     
+      - ${HOST_INPUT_DIR}:${PATHS__DATA_INPUT}:ro
+      # Монтируем выходные данные (Read-Write)
+      - ${HOST_OUTPUT_DIR}:${PATHS__DATA_OUTPUT}
+    env_file:
+      - .env  # Специальный env для докера
+    ports:
+      - "8505:8501"  # Открываем порт наружу (на 8505, т.к. 8501 занят TF Serving REST!)
+
+# volumes:
+#   db_data:
