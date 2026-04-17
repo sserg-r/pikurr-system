@@ -80,6 +80,16 @@ function FeatureInfo({ layerName, cqlExpr, onMapClick }) {
   ) : null
 }
 
+/* ---- WMS tile loading indicator ---- */
+function TileLoadTracker({ onLoadingChange }) {
+  useMapEvents({
+    tileloadstart: () => onLoadingChange(n => n + 1),
+    tileload:      () => onLoadingChange(n => Math.max(0, n - 1)),
+    tileerror:     () => onLoadingChange(n => Math.max(0, n - 1)),
+  })
+  return null
+}
+
 /* ---- Coordinate bar (показывает координаты последнего клика) ---- */
 function CoordBar({ coords }) {
   const [copied, setCopied] = useState(false)
@@ -110,6 +120,7 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
   const initialCenter = useMemo(() => [55.2, 29.6], [])
   const cacheBuster   = useMemo(() => (cqlExpr ? Date.now() : undefined), [cqlExpr])
   const [clickCoords, setClickCoords] = useState(null)
+  const [loadingTiles, setLoadingTiles] = useState(0)
 
   const vectorLayer = selectedYear ? 'pikurr:fields' : 'pikurr:fields_latest'
   const effectiveYear = selectedYear ?? maxYear
@@ -121,6 +132,7 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
     <div style={{ position: 'relative', height: '100%', width: '100%' }}>
       <MapContainer center={initialCenter} zoom={9} style={{ height: '100%', width: '100%' }}>
         <FitBounds bbox={bbox} />
+        <TileLoadTracker onLoadingChange={setLoadingTiles} />
         <FeatureInfo layerName={vectorLayer} cqlExpr={cqlExpr} onMapClick={setClickCoords} />
 
         {baseLayer === 'osm' && (
@@ -145,6 +157,11 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
             params={cqlExpr ? { CQL_FILTER: cqlExpr, time: cacheBuster } : undefined} />
         )}
       </MapContainer>
+
+      {/* Индикатор загрузки тайлов */}
+      {loadingTiles > 0 && (
+        <div className="tile-loader" title="Загрузка слоёв..." />
+      )}
 
       {/* Координаты последнего клика (вне MapContainer — не перехватывается Leaflet) */}
       <CoordBar coords={clickCoords} />

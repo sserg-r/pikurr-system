@@ -2,13 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { distr, oblasts } from '../constants';
 import StatsTable from './StatsTable';
 import WmsLegend from './WmsLegend';
-import { FiMap, FiPackage, FiLayers, FiFilter, FiUser, FiCalendar, FiDownload, FiHelpCircle, FiX, FiGlobe, FiChevronsLeft } from 'react-icons/fi';
+import { FiMap, FiPackage, FiLayers, FiFilter, FiUser, FiCalendar, FiDownload, FiHelpCircle, FiX, FiGlobe, FiChevronsLeft, FiRefreshCw } from 'react-icons/fi';
 import './Sidebar.css';
 
 const HELP_TEXT = 'Система отражает оценку спонтанной растительности сельскохозяйственных угодий на основе анализа данных дистанционного зондирования с использованием ИИ-технологий.';
 
 export default function Sidebar({
-  isOpen, onClose,
+  isOpen, onClose, onReset,
   baseLayer, setBaseLayer,
   usersByDistrict, onSelectUser,
   showVectors, setShowVectors,
@@ -61,6 +61,13 @@ export default function Sidebar({
     () => usersByDistrict[districtId] || [],
     [usersByDistrict, districtId]
   );
+
+  function handleReset() {
+    setOblastId('');
+    setDistrictId('');
+    setNrUser('');
+    onReset?.();
+  }
 
   const downloadQGISFiles = () => {
     const zipLink = document.createElement('a');
@@ -210,6 +217,14 @@ export default function Sidebar({
             <option key={u.key} value={u.value}>{u.label}</option>
           ))}
         </select>
+      </div>
+
+      {/* Сброс фильтров */}
+      <div className="sidebar-section">
+        <button className="reset-btn" onClick={handleReset} title="Сбросить все фильтры">
+          <FiRefreshCw size={14} />
+          сбросить фильтры
+        </button>
       </div>
 
       {/* Статистика */}

@@ -228,6 +228,30 @@ select:disabled {
   cursor: not-allowed;
 }
 
+/* ---- Reset button ---- */
+.reset-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  justify-content: center;
+  padding: 8px;
+  background-color: transparent;
+  color: #888;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.reset-btn:hover {
+  background-color: #fff0f0;
+  color: #d62828;
+  border-color: #f4a0a0;
+  transform: none;
+  box-shadow: none;
+}
+
 /* ---- Stats ---- */
 .stats-section {
   margin-top: 16px;
@@ -284,6 +308,15 @@ select:disabled {
 
 /* ---- Dark theme ---- */
 @media (prefers-color-scheme: dark) {
+  .reset-btn {
+    border-color: #444;
+    color: #777;
+  }
+  .reset-btn:hover {
+    background-color: #3a1f1f;
+    color: #ff8080;
+    border-color: #8b3030;
+  }
   .sidebar {
     background-color: #1e1e1e;
     border-right-color: #333;
