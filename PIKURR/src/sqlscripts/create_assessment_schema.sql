@@ -33,9 +33,18 @@ DROP VIEW IF EXISTS assessment_ready_latest;
 DROP VIEW IF EXISTS assessment_ready;
 
 -- assessment_ready: все годы.
--- agrifields дедуплицируется через DISTINCT ON (nr_user) — в таблице бывают
--- дублирующиеся nr_user (несколько записей на одно поле), что без этого
--- порождало удвоение строк в результирующем view.
+-- agrifields дедуплицируется через DISTINCT ON (nr_user).
+--
+-- valuation / bzdz — логика:
+--   Новые данные (stats IS NOT NULL): доля лес+кустарник из stats JSON.
+--   Старые данные (stats IS NULL):    доля из HTML-таблицы в description (xpath).
+--   Пороги valuation (совпадают с исторической логикой):
+--     frac > 0.4 AND ndohod_d <= 0  → forest
+--     frac > 0.3 AND ndohod_d  > 0  → clearing
+--     ball_co  > 24                 → tillage
+--     иначе                         → meadow
+--   bzdz — категория условий хозяйствования по ndohod_d.
+
 CREATE OR REPLACE VIEW assessment_ready AS
 SELECT
     a.nr_user,
@@ -45,37 +54,53 @@ SELECT
     b.stats,
     b.updated_at,
     -- Площадь поля в гектарах
-    ROUND((ST_Area(a.geom::geography) / 10000)::numeric, 2)          AS area_ha,
-    -- Балл оценки: из agrifields если есть, иначе NULL
-    a.ball_co::float                                                   AS ball_co,
-    -- Вырубки по Hansen (не реализованы)
-    NULL::float                                                        AS bzdz,
-    -- Доминирующий класс → категория.
-    -- Новые данные (stats IS NOT NULL): вычисляется из JSON.
-    -- Старые данные (stats IS NULL): берётся сохранённое значение из assessment.valuation.
+    ROUND((ST_Area(a.geom::geography) / 10000)::numeric, 2)  AS area_ha,
+    a.ball_co                                                  AS ball_co,
+    -- Условия хозяйствования (по доходности ndohod_d)
     CASE
-        WHEN b.stats IS NULL THEN b.valuation
-        ELSE (
-            CASE (
-                SELECT key
-                FROM   jsonb_each_text(b.stats::jsonb)
-                ORDER  BY value::float DESC
-                LIMIT  1
-            )
-                WHEN '0' THEN 'forest'
-                WHEN '3' THEN 'meadow'
-                WHEN '5' THEN 'tillage'
-                ELSE         'clearing'
-            END
-        )
-    END                                                                AS valuation
+        WHEN a.ndohod_d > 400 THEN concat('наиболее благоприятные (', ROUND(a.ndohod_d::numeric, 1), ')')
+        WHEN a.ndohod_d > 300 THEN concat('благоприятные (',          ROUND(a.ndohod_d::numeric, 1), ')')
+        WHEN a.ndohod_d > 200 THEN concat('хорошие (',                ROUND(a.ndohod_d::numeric, 1), ')')
+        WHEN a.ndohod_d > 100 THEN concat('удовлетворительные (',     ROUND(a.ndohod_d::numeric, 1), ')')
+        WHEN a.ndohod_d > 0   THEN concat('сложные (',                ROUND(a.ndohod_d::numeric, 1), ')')
+        ELSE                       concat('плохие (',                  ROUND(a.ndohod_d::numeric, 1), ')')
+    END                                                        AS bzdz,
+    -- Категория землепользования (через fb.frac из LATERAL)
+    CASE
+        WHEN fb.frac > 0.4 AND a.ndohod_d <= 0 THEN 'forest'
+        WHEN fb.frac > 0.3 AND a.ndohod_d >  0 THEN 'clearing'
+        WHEN a.ball_co > 24                     THEN 'tillage'
+        ELSE                                         'meadow'
+    END                                                        AS valuation
 FROM (
-    -- Дедупликация: берём одну запись на nr_user (дубли имеют одинаковую геометрию)
     SELECT DISTINCT ON (nr_user) *
     FROM   agrifields
     ORDER  BY nr_user
 ) a
-JOIN assessment b ON a.nr_user::bigint = b.fid_ext;
+JOIN assessment b ON a.nr_user::bigint = b.fid_ext
+-- Доля пикселей "лес+кустарник+закустаренный" (классы 0,1,2).
+-- Вычисляется один раз на строку: из stats JSON (новые данные)
+-- или из HTML-таблицы в description (старые данные, xpath-парсинг).
+JOIN LATERAL (
+    SELECT CASE
+        WHEN b.stats IS NOT NULL THEN
+            (
+                COALESCE((b.stats::jsonb->>'0')::float, 0) +
+                COALESCE((b.stats::jsonb->>'1')::float, 0) +
+                COALESCE((b.stats::jsonb->>'2')::float, 0)
+            ) / NULLIF(
+                (SELECT SUM(t.val::float) FROM jsonb_each_text(b.stats::jsonb) AS t(k, val)),
+                0
+            )
+        WHEN b.description IS NOT NULL THEN
+            (
+                SELECT COALESCE(SUM((xpath('//td/text()', td))[2]::text::float), 0)
+                FROM   unnest(xpath('//tr', b.description::xml)) AS td
+                WHERE  xpath('//td/text()', td)::text ~* 'forest|bush'
+            )
+        ELSE 0
+    END AS frac
+) fb ON TRUE;
 
 -- assessment_ready_latest: для каждого поля — только самый свежий год.
 -- Используется слоем fields_latest в GeoServer (режим "Все годы").

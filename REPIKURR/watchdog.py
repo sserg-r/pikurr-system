@@ -77,13 +77,15 @@ def main():
     PID_FILE.write_text(str(os.getpid()))
     logger.info(f"Watchdog started (pid={os.getpid()}), watching {INBOX}, poll={POLL_SECS}s")
 
+    # seen: имена пакетов, которые уже успешно доставлены в этом сеансе.
+    # При старте НЕ добавляем сюда существующие файлы — deliver.py удаляет ZIP
+    # после успешной доставки, поэтому любой файл в inbox при старте —
+    # либо новый, либо ранее упавший → нужно попробовать снова.
     seen: set[str] = set()
 
-    # Уже существующие файлы — помечаем как виденные (не обрабатываем повторно)
-    for f in INBOX.glob("pikurr_update_*.zip"):
-        seen.add(f.name)
-    if seen:
-        logger.info(f"Pre-existing packages (skipped): {sorted(seen)}")
+    preexisting = sorted(INBOX.glob("pikurr_update_*.zip"))
+    if preexisting:
+        logger.info(f"Pre-existing packages (will process): {[f.name for f in preexisting]}")
 
     while True:
         extra_env = load_env(ENV_FILE)
