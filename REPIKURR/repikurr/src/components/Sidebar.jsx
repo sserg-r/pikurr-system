@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { distr, oblasts } from '../constants';
 import StatsTable from './StatsTable';
 import WmsLegend from './WmsLegend';
@@ -235,8 +236,8 @@ export default function Sidebar({
 
       {baseLayer === 'wms' && <WmsLegend layer="image_assessment" />}
 
-      {/* Help overlay */}
-      {showHelp && (
+      {/* Help overlay — рендерим в document.body через портал, иначе overflow:auto сайдбара обрезает fixed-позиционирование */}
+      {showHelp && createPortal(
         <div className="help-overlay" onClick={() => setShowHelp(false)}>
           <div className="help-content" onClick={e => e.stopPropagation()}>
             <button className="close-help" onClick={() => setShowHelp(false)}>
@@ -244,7 +245,8 @@ export default function Sidebar({
             </button>
             <p>{HELP_TEXT}</p>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
