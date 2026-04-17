@@ -1,58 +1,62 @@
-const valueMap = {
-  forest: 'перевод в л/х',
-  tillage: 'пахотное с/х',
+import './StatsTable.css';
+
+const VALUE_LABELS = {
+  forest:   'перевод в л/х',
+  tillage:  'пахотное с/х',
   clearing: 'с/х после расчистки',
-  meadow: 'луговое с/х',
+  meadow:   'луговое с/х',
+}
+
+const COLOR_MAP = {
+  forest:   '#2C7D2C',
+  tillage:  '#b85c06',
+  meadow:   '#d9b530',
+  clearing: '#0000CC',
 }
 
 export default function StatsTable({ data }) {
   if (!data) return null
   const rows = data?.AggregationResults || []
   let totalCount = 0
-  let totalSum = 0
-  rows.forEach(([, count, sum]) => { totalCount += Number(count)||0; totalSum += Number(sum)||0 })
+  let totalSum   = 0
+  rows.forEach(([, count, sum]) => {
+    totalCount += Number(count) || 0
+    totalSum   += Number(sum)   || 0
+  })
 
   return (
-    <div style={{ marginTop: 12 }}>
-      <div style={{ fontWeight: 600, marginBottom: 6 }}>Статистика</div>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+    <div>
+      <div style={{ fontWeight: 600, marginBottom: 6, fontSize: '0.88rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: '#444' }}>
+        Статистика
+      </div>
+      <table className="stats-table">
         <thead>
           <tr>
-            <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: '6px 4px' }}>Класс</th>
-            <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', padding: '6px 4px' }}>Площадь, га</th>
-            <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', padding: '6px 4px' }}>Количество</th>
+            <th>Класс</th>
+            <th className="value-cell">Площадь, га</th>
+            <th className="value-cell">Полей</th>
           </tr>
         </thead>
         <tbody>
           {rows.map(([val, count, sum]) => (
             <tr key={val}>
-              <td style={{ padding: '6px 4px', borderBottom: '1px solid #f3f4f6', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{
-                  display: 'inline-block',
-                  width: '12px',
-                  height: '12px',
-                  backgroundColor: {
-                    forest: '#2C7D2C',
-                    tillage: '#b85c06',
-                    meadow: '#d9b530',
-                    clearing: '#0000CC'
-                  }[val],
-                  border: '1px solid #ccc'
-                }}></span>
-                {valueMap[val] || val}
+              <td>
+                <div className="stats-cell-label">
+                  <span className="color-swatch" style={{ backgroundColor: COLOR_MAP[val] || '#999' }} />
+                  {VALUE_LABELS[val] || val}
+                </div>
               </td>
-              <td style={{ padding: '6px 4px', textAlign: 'right', borderBottom: '1px solid #f3f4f6' }}>{Number(count).toFixed(1).toLocaleString('ru-RU')}</td>
-              <td style={{ padding: '6px 4px', textAlign: 'right', borderBottom: '1px solid #f3f4f6' }}>{Number(sum).toFixed(0)}</td>
+              <td className="value-cell">{Number(count).toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</td>
+              <td className="value-cell">{Number(sum).toFixed(0)}</td>
             </tr>
           ))}
-          <tr>
-            <td style={{ padding: '8px 4px', fontWeight: 600 }}>Итого</td>
-            <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: 600 }}>{totalCount.toLocaleString('ru-RU')}</td>
-            <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: 600 }}>{totalSum.toFixed(2)}</td>
+          <tr className="total-row">
+            <td>Итого</td>
+            <td className="value-cell">{totalCount.toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</td>
+            <td className="value-cell">{totalSum.toFixed(0)}</td>
           </tr>
         </tbody>
       </table>
     </div>
   )
 }
-

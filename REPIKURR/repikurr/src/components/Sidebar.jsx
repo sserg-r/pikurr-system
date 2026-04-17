@@ -1,60 +1,73 @@
-import { useEffect, useMemo, useState } from 'react'
-import { distr, oblasts } from '../constants'
-import StatsTable from './StatsTable'
-import WmsLegend from './WmsLegend'
+import { useEffect, useMemo, useState } from 'react';
+import { distr, oblasts } from '../constants';
+import StatsTable from './StatsTable';
+import WmsLegend from './WmsLegend';
+import { FiMap, FiPackage, FiLayers, FiFilter, FiUser, FiCalendar, FiDownload, FiHelpCircle, FiX, FiGlobe } from 'react-icons/fi';
+import './Sidebar.css';
 
-export default function Sidebar({ baseLayer, setBaseLayer, usersByDistrict, onSelectUser, showVectors, setShowVectors, showMosaic, setShowMosaic, statsData, availableYears, selectedYear, setSelectedYear, districtsByYear }) {
-  const [oblastId, setOblastId] = useState('')
-  const [districtId, setDistrictId] = useState('')
-  const [nrUser, setNrUser] = useState('')
+const HELP_TEXT = 'Система отражает оценку спонтанной растительности сельскохозяйственных угодий на основе анализа данных дистанционного зондирования с использованием ИИ-технологий.';
 
-  // When year changes, reset district/oblast if they no longer have data for the new year
+export default function Sidebar({
+  baseLayer, setBaseLayer,
+  usersByDistrict, onSelectUser,
+  showVectors, setShowVectors,
+  showMosaic, setShowMosaic,
+  statsData,
+  availableYears, selectedYear, setSelectedYear,
+  districtsByYear,
+}) {
+  const [oblastId, setOblastId]   = useState('');
+  const [districtId, setDistrictId] = useState('');
+  const [nrUser, setNrUser]       = useState('');
+  const [showHelp, setShowHelp]   = useState(false);
+
+  // При смене года — сбрасываем район/землепользователь если у них нет данных за этот год
   useEffect(() => {
-    const yearSet = selectedYear ? districtsByYear?.[selectedYear] : null
-    if (!yearSet) return
+    const yearSet = selectedYear ? districtsByYear?.[selectedYear] : null;
+    if (!yearSet) return;
     if (districtId && !yearSet.has(districtId)) {
-      setDistrictId('')
-      setNrUser('')
-      onSelectUser('', '')
+      setDistrictId('');
+      setNrUser('');
+      onSelectUser('', '');
     }
     if (oblastId && ![...yearSet].some(d => d.substring(0, 2) === oblastId)) {
-      setOblastId('')
+      setOblastId('');
     }
-  }, [selectedYear, districtsByYear])
-
-  const filteredDistricts = useMemo(() => {
-    const yearSet = selectedYear ? districtsByYear?.[selectedYear] : null
-    return Object.entries(distr).filter(([id]) => {
-      if (oblastId && id.substring(0, 2) !== oblastId) return false
-      if (!(usersByDistrict[id] && usersByDistrict[id].length > 0)) return false
-      if (yearSet && !yearSet.has(id)) return false
-      return true
-    })
-  }, [oblastId, usersByDistrict, selectedYear, districtsByYear])
-
-  const usersForDistrict = useMemo(() => usersByDistrict[districtId] || [], [usersByDistrict, districtId])
+  }, [selectedYear, districtsByYear]);
 
   const activeOblasts = useMemo(() => {
-    const yearSet = selectedYear ? districtsByYear?.[selectedYear] : null
-    const presentPrefixes = new Set(
+    const yearSet = selectedYear ? districtsByYear?.[selectedYear] : null;
+    const prefixes = new Set(
       Object.keys(usersByDistrict)
         .filter(id => usersByDistrict[id]?.length > 0)
         .filter(id => !yearSet || yearSet.has(id))
         .map(id => id.substring(0, 2))
-    )
-    return Object.entries(oblasts).filter(([prefix]) => presentPrefixes.has(prefix))
-  }, [usersByDistrict, selectedYear, districtsByYear])
-  
+    );
+    return Object.entries(oblasts).filter(([p]) => prefixes.has(p));
+  }, [usersByDistrict, selectedYear, districtsByYear]);
+
+  const filteredDistricts = useMemo(() => {
+    const yearSet = selectedYear ? districtsByYear?.[selectedYear] : null;
+    return Object.entries(distr).filter(([id]) => {
+      if (oblastId && id.substring(0, 2) !== oblastId) return false;
+      if (!(usersByDistrict[id]?.length > 0)) return false;
+      if (yearSet && !yearSet.has(id)) return false;
+      return true;
+    });
+  }, [oblastId, usersByDistrict, selectedYear, districtsByYear]);
+
+  const usersForDistrict = useMemo(
+    () => usersByDistrict[districtId] || [],
+    [usersByDistrict, districtId]
+  );
+
   const downloadQGISFiles = () => {
-    // Скачивание ZIP файла
     const zipLink = document.createElement('a');
     zipLink.href = '/pikurr_qgis.zip';
     zipLink.download = 'pikurr_qgis.zip';
     document.body.appendChild(zipLink);
     zipLink.click();
     document.body.removeChild(zipLink);
-    
-    // Скачивание README с задержкой
     setTimeout(() => {
       const txtLink = document.createElement('a');
       txtLink.href = '/pikurr_qgis_readme.txt';
@@ -66,71 +79,88 @@ export default function Sidebar({ baseLayer, setBaseLayer, usersByDistrict, onSe
   };
 
   return (
-    <div style={{ width: '20%', padding: '8px 8px 8px 8px', borderRight: '2px solid #e5e7eb', overflowY: 'auto' }}>
-      
-      
-      {/* Кнопка скачивания QGIS плагина */}
-      <div style={{ marginBottom: 8 }}>
-        <button
-          onClick={downloadQGISFiles}
-          style={{
-            padding: '4px 8px',
-            backgroundColor: '#f0f0f0',
-            border: '1px solid #ccc',
-            borderRadius: 4,
-            cursor: 'pointer'
-          }}
-          title="плагин для просмотра данных в QGIS"
-        >
-          qgis plugin
+    <div className="sidebar">
+
+      {/* Заголовок */}
+      <div className="sidebar-header">
+        <h2>ПИК УРР</h2>
+        <div className="subtitle-container">
+          <p className="subtitle">Оценка сельскохозяйственных угодий</p>
+          <button className="help-icon" onClick={() => setShowHelp(true)} title="О системе">
+            <FiHelpCircle size={15} />
+          </button>
+        </div>
+      </div>
+
+      {/* QGIS плагин */}
+      <div className="sidebar-section">
+        <div className="section-title"><FiPackage size={16} /><span>Плагин для QGIS</span></div>
+        <button className="download-btn" onClick={downloadQGISFiles} title="Скачать плагин для QGIS">
+          <FiDownload size={15} />
+          скачать плагин
         </button>
       </div>
-      <h3 style={{ margin: '8px 0' }}>ПИК УРР</h3>
-      <div style={{ width:'100%', marginBottom: 8}}>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>Базовые карты</div>
-        <div style={{ lineHeight: 1.2 }}>
-          <label style={{ display: 'block', marginBottom: 4 }}>
-            <input type="radio" name="basemap" checked={baseLayer==='none'} onChange={()=>setBaseLayer('none')} /> нет
-          </label>
-          <label style={{ display: 'block', marginBottom: 4 }}>
-            <input type="radio" name="basemap" checked={baseLayer==='osm'} onChange={()=>setBaseLayer('osm')} /> OSM
-          </label>
-          <label style={{ display: 'block', marginBottom: 4 }}>
-            <input type="radio" name="basemap" checked={baseLayer==='esri'} onChange={()=>setBaseLayer('esri')} /> Esri Satellite
-          </label>
+
+      {/* Базовые карты */}
+      <div className="sidebar-section">
+        <div className="section-title"><FiMap size={16} /><span>Базовые карты</span></div>
+        <div className="radio-group">
+          {[
+            { value: 'none',  label: 'Нет' },
+            { value: 'osm',   label: 'OSM' },
+            { value: 'esri',  label: 'Esri Satellite' },
+          ].map(opt => (
+            <label key={opt.value} className="radio-option">
+              <input type="radio" name="basemap" checked={baseLayer === opt.value} onChange={() => setBaseLayer(opt.value)} />
+              <span className="radio-custom"></span>
+              {opt.label}
+            </label>
+          ))}
         </div>
       </div>
 
-      <div style={{ marginBottom: 8 }}>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>Слои</div>
-        <div style={{ lineHeight: 1.2 }}>
-          <label style={{ display: 'block', marginBottom: 4 }}>
-            <input type="checkbox" checked={showMosaic} onChange={(e)=>setShowMosaic(e.target.checked)} /> AI оценка
-          </label>
-        </div>
+      {/* Слои */}
+      <div className="sidebar-section">
+        <div className="section-title"><FiLayers size={16} /><span>Слои</span></div>
+        <label className="toggle-option">
+          <input type="checkbox" checked={showMosaic} onChange={e => setShowMosaic(e.target.checked)} />
+          <span className="toggle-custom"></span>
+          AI оценка
+        </label>
+        <label className="toggle-option">
+          <input type="checkbox" checked={showVectors} onChange={e => setShowVectors(e.target.checked)} />
+          <span className="toggle-custom"></span>
+          С/х участки
+        </label>
       </div>
 
+      {/* Год оценки */}
       {availableYears && availableYears.length > 1 && (
-        <div style={{ marginBottom: 8 }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Год оценки</div>
-          <select style={{ width: '100%' }} value={selectedYear || ''} onChange={(e) => setSelectedYear(e.target.value ? Number(e.target.value) : null)}>
+        <div className="sidebar-section">
+          <div className="section-title"><FiCalendar size={16} /><span>Год оценки</span></div>
+          <select
+            value={selectedYear ?? ''}
+            onChange={e => setSelectedYear(e.target.value ? Number(e.target.value) : null)}
+          >
             <option value="">Все годы</option>
-            {availableYears.map(y => (
-              <option key={y} value={y}>{y}</option>
-            ))}
+            {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
         </div>
       )}
 
-      <div style={{ marginBottom: 8 }}>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>Область</div>
-        <select style={{ width: '100%' }} value={oblastId} onChange={(e) => {
-          const v = e.target.value
-          setOblastId(v)
-          setDistrictId('')
-          setNrUser('')
-          onSelectUser('', '')
-        }}>
+      {/* Область */}
+      <div className="sidebar-section">
+        <div className="section-title"><FiGlobe size={16} /><span>Область</span></div>
+        <select
+          value={oblastId}
+          onChange={e => {
+            const v = e.target.value;
+            setOblastId(v);
+            setDistrictId('');
+            setNrUser('');
+            onSelectUser('', '');
+          }}
+        >
           <option value="">Все области</option>
           {activeOblasts.map(([prefix, name]) => (
             <option key={prefix} value={prefix}>{name}</option>
@@ -138,9 +168,18 @@ export default function Sidebar({ baseLayer, setBaseLayer, usersByDistrict, onSe
         </select>
       </div>
 
-      <div style={{ marginBottom: 8 }}>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>Районы</div>
-        <select style={{ width: '100%' }} value={districtId} onChange={(e)=>{ const v = e.target.value; setDistrictId(v); setNrUser(''); onSelectUser('', v) }}>
+      {/* Район */}
+      <div className="sidebar-section">
+        <div className="section-title"><FiFilter size={16} /><span>Район</span></div>
+        <select
+          value={districtId}
+          onChange={e => {
+            const v = e.target.value;
+            setDistrictId(v);
+            setNrUser('');
+            onSelectUser('', v);
+          }}
+        >
           <option value="">Выберите район</option>
           {filteredDistricts.map(([id, name]) => (
             <option key={id} value={id}>{name}</option>
@@ -148,31 +187,43 @@ export default function Sidebar({ baseLayer, setBaseLayer, usersByDistrict, onSe
         </select>
       </div>
 
-      <div style={{ marginBottom: 8 }}>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>Землепользователь</div>
-        <select style={{ width: '100%' }} value={nrUser} onChange={(e)=>{ const v=e.target.value; setNrUser(v); onSelectUser(v, districtId) }} disabled={!districtId}>
+      {/* Землепользователь */}
+      <div className="sidebar-section">
+        <div className="section-title"><FiUser size={16} /><span>Землепользователь</span></div>
+        <select
+          value={nrUser}
+          disabled={!districtId}
+          onChange={e => {
+            const v = e.target.value;
+            setNrUser(v);
+            onSelectUser(v, districtId);
+          }}
+        >
           <option value="">Выберите землепользователя</option>
-          {/* <option value="*">*все*</option>     */}
-          
           {usersForDistrict.map(u => (
             <option key={u.key} value={u.value}>{u.label}</option>
           ))}
-          {/* {usersForDistrict[0].value.substring(0, 4).map(u => (
-            <option key={"*все*"} value={u}>{u}</option>
-          ))} */}
         </select>
       </div>
 
-      <div style={{ marginBottom: 8 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <input type="checkbox" checked={showVectors} onChange={(e)=>setShowVectors(e.target.checked)} />
-          с/х участки
-        </label>
+      {/* Статистика */}
+      <div className="stats-section">
+        <StatsTable data={statsData} />
       </div>
 
-      <StatsTable data={statsData} />
-      {baseLayer==='wms' && <WmsLegend layer="image_assessment" />}
-    </div>
-  )
-}
+      {baseLayer === 'wms' && <WmsLegend layer="image_assessment" />}
 
+      {/* Help overlay */}
+      {showHelp && (
+        <div className="help-overlay" onClick={() => setShowHelp(false)}>
+          <div className="help-content" onClick={e => e.stopPropagation()}>
+            <button className="close-help" onClick={() => setShowHelp(false)}>
+              <FiX size={18} />
+            </button>
+            <p>{HELP_TEXT}</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

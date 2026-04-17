@@ -212,7 +212,7 @@ def import_vectors(gpkg_path: Path):
     # GeoServer монтирует ./data → /mnt/data, поэтому копируем туда.
     if via_docker:
         tmp_gpkg_host = GEODATA_DIR.parent / "_tmp_vectors.gpkg"
-        shutil.copy2(gpkg_path, tmp_gpkg_host)
+        shutil.copy(gpkg_path, tmp_gpkg_host)   # copy, not copy2: copystat fails on some mounts
         gpkg_in_container = "/mnt/data/_tmp_vectors.gpkg"
     else:
         gpkg_in_container = str(gpkg_path)
