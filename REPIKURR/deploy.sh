@@ -55,8 +55,10 @@ log "Создаю директории..."
 mkdir -p "$GEODATA_DIR"
 mkdir -p "$INBOX_DIR"
 # GeoServer пишет/читает через docker mount ./data → /mnt/data
-# Права должны быть открыты, т.к. контейнер может работать под другим UID
+# и ./geoserver_data → /opt/geoserver/data_dir.
+# Права должны быть открыты, т.к. контейнер работает под другим UID.
 chmod -R 777 "$SCRIPT_DIR/data"
+chmod -R 777 "$SCRIPT_DIR/geoserver_data"
 
 # 4. Поднять стек
 log "Запускаю контейнеры..."
