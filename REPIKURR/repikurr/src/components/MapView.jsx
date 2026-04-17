@@ -24,12 +24,38 @@ const PROPERTY_LABELS = {
 }
 const SHOWN_KEYS = Object.keys(PROPERTY_LABELS)
 
+const VALUATION_RU = {
+  forest:   'перевод в л/х',
+  clearing: 'с/х после расчистки',
+  meadow:   'луговое с/х',
+  tillage:  'пахотное с/х',
+}
+
+// Заменяет английские названия категорий растительности в HTML-таблице на русские
+const DESC_TRANSLATIONS = [
+  [/\bforest\b/gi,  'лес'],
+  [/\bbushes\b/gi,  'кустарник'],
+  [/\bbushy\b/gi,   'закуст. луг'],
+  [/\bmeadows\b/gi, 'луг'],
+  [/\bother\b/gi,   'прочее'],
+  [/\btillage\b/gi, 'пашня'],
+]
+function translateDescHtml(html) {
+  if (!html) return html
+  return DESC_TRANSLATIONS.reduce((s, [re, ru]) => s.replace(re, ru), html)
+}
+
+function formatValue(k, v) {
+  const s = String(v)
+  if (k === 'valuation') return VALUATION_RU[s] ?? s
+  return s
+}
+
 function FeatureInfo({ layerName, cqlExpr, onMapClick }) {
   const [popup, setPopup] = useState(null)
 
   const map = useMapEvents({
     click: async (e) => {
-      // Передаём координаты вверх для CoordBar
       onMapClick?.(e.latlng)
 
       try {
@@ -63,7 +89,10 @@ function FeatureInfo({ layerName, cqlExpr, onMapClick }) {
       <div className="map-popup">
         <h3>Детали участка</h3>
         {props?.description && (
-          <div className="popup-description" dangerouslySetInnerHTML={{ __html: props.description }} />
+          <div
+            className="popup-description"
+            dangerouslySetInnerHTML={{ __html: translateDescHtml(props.description) }}
+          />
         )}
         <div className="popup-properties">
           {SHOWN_KEYS
@@ -71,7 +100,7 @@ function FeatureInfo({ layerName, cqlExpr, onMapClick }) {
             .map(k => (
               <div key={k} className="property-row">
                 <span className="property-name">{PROPERTY_LABELS[k]}</span>
-                <span className="property-value">{String(props[k])}</span>
+                <span className="property-value">{formatValue(k, props[k])}</span>
               </div>
             ))}
         </div>
@@ -110,13 +139,12 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
   const initialCenter = useMemo(() => [55.2, 29.6], [])
   const cacheBuster   = useMemo(() => (cqlExpr ? Date.now() : undefined), [cqlExpr])
   const [clickCoords, setClickCoords] = useState(null)
-  const [loadingTiles, setLoadingTiles] = useState(0)
 
-  const tileHandlers = useMemo(() => ({
-    tileloadstart: () => setLoadingTiles(n => n + 1),
-    tileload:      () => setLoadingTiles(n => Math.max(0, n - 1)),
-    tileerror:     () => setLoadingTiles(n => Math.max(0, n - 1)),
-  }), [])
+  // Мемоизируем params чтобы WMSTileLayer не пересоздавался при посторонних ре-рендерах
+  const wmsVectorParams = useMemo(
+    () => cqlExpr ? { CQL_FILTER: cqlExpr, time: cacheBuster } : undefined,
+    [cqlExpr, cacheBuster]
+  )
 
   const vectorLayer = selectedYear ? 'pikurr:fields' : 'pikurr:fields_latest'
   const effectiveYear = selectedYear ?? maxYear
@@ -144,24 +172,16 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
         {showMosaic && (
           <WMSTileLayer key={`mosaic-${rasterLayer}`} zIndex={300}
             url={WMS_BASE_URL} version="1.1.1"
-            layers={rasterLayer} format="image/png" transparent
-            eventHandlers={tileHandlers} />
+            layers={rasterLayer} format="image/png" transparent />
         )}
         {showVectors && (
           <WMSTileLayer key={vectorLayer} zIndex={500}
             url={WMS_BASE_URL} version="1.1.1"
             layers={vectorLayer} format="image/png" transparent
-            params={cqlExpr ? { CQL_FILTER: cqlExpr, time: cacheBuster } : undefined}
-            eventHandlers={tileHandlers} />
+            params={wmsVectorParams} />
         )}
       </MapContainer>
 
-      {/* Индикатор загрузки тайлов */}
-      {loadingTiles > 0 && (
-        <div className="tile-loader" title="Загрузка слоёв..." />
-      )}
-
-      {/* Координаты последнего клика (вне MapContainer — не перехватывается Leaflet) */}
       <CoordBar coords={clickCoords} />
     </div>
   )
