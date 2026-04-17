@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { distr, oblasts } from '../constants';
 import StatsTable from './StatsTable';
 import WmsLegend from './WmsLegend';
-import { FiMap, FiPackage, FiLayers, FiFilter, FiUser, FiCalendar, FiDownload, FiHelpCircle, FiX, FiGlobe } from 'react-icons/fi';
+import { FiMap, FiPackage, FiLayers, FiFilter, FiUser, FiCalendar, FiDownload, FiHelpCircle, FiX, FiGlobe, FiChevronsLeft } from 'react-icons/fi';
 import './Sidebar.css';
 
 const HELP_TEXT = 'Система отражает оценку спонтанной растительности сельскохозяйственных угодий на основе анализа данных дистанционного зондирования с использованием ИИ-технологий.';
 
 export default function Sidebar({
+  isOpen, onClose,
   baseLayer, setBaseLayer,
   usersByDistrict, onSelectUser,
   showVectors, setShowVectors,
@@ -79,11 +80,16 @@ export default function Sidebar({
   };
 
   return (
-    <div className="sidebar">
+    <div className={`sidebar${isOpen ? '' : ' collapsed'}`}>
 
       {/* Заголовок */}
       <div className="sidebar-header">
-        <h2>ПИК УРР</h2>
+        <div className="sidebar-header-top">
+          <h2>ПИК УРР</h2>
+          <button className="sidebar-close-btn" onClick={onClose} title="Свернуть панель">
+            <FiChevronsLeft size={18} />
+          </button>
+        </div>
         <div className="subtitle-container">
           <p className="subtitle">Оценка сельскохозяйственных угодий</p>
           <button className="help-icon" onClick={() => setShowHelp(true)} title="О системе">

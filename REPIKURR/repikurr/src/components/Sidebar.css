@@ -1,6 +1,6 @@
 .sidebar {
   width: 280px;
-  min-width: 240px;
+  min-width: 280px;
   padding: 20px;
   background-color: white;
   box-shadow: 0 0 20px rgba(0,0,0,0.1);
@@ -8,7 +8,16 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  transition: all 0.3s ease;
+  transition: width 0.25s ease, min-width 0.25s ease, padding 0.25s ease, border 0.25s ease;
+  z-index: 100;
+}
+
+.sidebar.collapsed {
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  overflow: hidden;
 }
 
 .sidebar-header {
@@ -17,10 +26,36 @@
   border-bottom: 1px solid #eee;
 }
 
+.sidebar-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
 .sidebar-header h2 {
-  margin: 0 0 4px;
+  margin: 0;
   font-size: 1.4rem;
   color: #333;
+}
+
+/* Кнопка сворачивания (внутри сайдбара) */
+.sidebar-close-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  color: #888;
+  border-radius: 6px;
+  box-shadow: none;
+  transform: none;
+  transition: color 0.15s, background 0.15s;
+}
+.sidebar-close-btn:hover {
+  color: #4361ee;
+  background: #f0f3ff;
+  transform: none;
+  box-shadow: none;
 }
 
 .subtitle-container {
@@ -254,6 +289,8 @@ select:disabled {
     border-right-color: #333;
     box-shadow: 0 0 20px rgba(0,0,0,0.4);
   }
+  .sidebar-close-btn { color: #666; }
+  .sidebar-close-btn:hover { background: #2a2f5a; color: #7c9bff; }
   .sidebar-header { border-bottom-color: #333; }
   .sidebar-header h2 { color: #f0f0f0; }
   .subtitle { color: #aaa; }

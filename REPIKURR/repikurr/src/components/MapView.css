@@ -58,3 +58,61 @@
   .property-value { color: #f0f0f0; }
   .property-row { border-bottom-color: #333; }
 }
+
+/* ---- Coord bar ---- */
+.coord-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: rgba(255,255,255,0.92);
+  backdrop-filter: blur(4px);
+  border-top: 1px solid #e0e0e0;
+  font-size: 0.82rem;
+  color: #444;
+  font-family: 'Consolas', 'Monaco', monospace;
+}
+
+.coord-label { font-size: 0.9rem; }
+
+.coord-text { flex: 1; letter-spacing: 0.02em; }
+
+.coord-copy {
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: #555;
+  box-shadow: none;
+  transform: none;
+  transition: background 0.15s;
+}
+.coord-copy:hover {
+  background: #f0f3ff;
+  color: #4361ee;
+  transform: none;
+  box-shadow: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .coord-bar {
+    background: rgba(30,30,30,0.92);
+    border-top-color: #333;
+    color: #ccc;
+  }
+  .coord-copy {
+    border-color: #444;
+    color: #aaa;
+  }
+  .coord-copy:hover {
+    background: #2a2f5a;
+    color: #7c9bff;
+  }
+}

@@ -58,7 +58,8 @@ mkdir -p "$INBOX_DIR"
 # и ./geoserver_data → /opt/geoserver/data_dir.
 # Права должны быть открыты, т.к. контейнер работает под другим UID.
 chmod -R 777 "$SCRIPT_DIR/data"
-chmod -R 777 "$SCRIPT_DIR/geoserver_data"
+# geoserver_data частично принадлежит UID контейнера (gwc, logs) — игнорируем ошибки прав
+chmod -R 777 "$SCRIPT_DIR/geoserver_data" 2>/dev/null || true
 
 # 4. Поднять стек
 log "Запускаю контейнеры..."

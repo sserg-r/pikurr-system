@@ -4,31 +4,34 @@ import { WMS_BASE_URL } from '../constants'
 import { useEffect, useMemo, useState } from 'react'
 import './MapView.css'
 
+/* ---- FitBounds ---- */
 function FitBounds({ bbox }) {
   const map = useMap()
   useEffect(() => {
-    if (bbox) {
-      map.fitBounds([[bbox.miny, bbox.minx], [bbox.maxy, bbox.maxx]])
-    }
+    if (bbox) map.fitBounds([[bbox.miny, bbox.minx], [bbox.maxy, bbox.maxx]])
   }, [bbox, map])
   return null
 }
 
+/* ---- Feature info popup ---- */
 const PROPERTY_LABELS = {
   nr_user:  'id землепользователя',
   year:     'год оценки',
   ball_co:  'балл КО',
-  bzdz:     'условия хозяйствования',
+  bzdz:     'Благоприятность земледелия',
   area_ha:  'площадь, га',
   valuation:'оценка',
 }
 const SHOWN_KEYS = Object.keys(PROPERTY_LABELS)
 
-function FeatureInfo({ layerName, cqlExpr }) {
+function FeatureInfo({ layerName, cqlExpr, onMapClick }) {
   const [popup, setPopup] = useState(null)
 
   const map = useMapEvents({
     click: async (e) => {
+      // Передаём координаты вверх для CoordBar
+      onMapClick?.(e.latlng)
+
       try {
         const point  = map.latLngToContainerPoint(e.latlng, map.getZoom())
         const size   = map.getSize()
@@ -77,9 +80,36 @@ function FeatureInfo({ layerName, cqlExpr }) {
   ) : null
 }
 
+/* ---- Coordinate bar (показывает координаты последнего клика) ---- */
+function CoordBar({ coords }) {
+  const [copied, setCopied] = useState(false)
+  if (!coords) return null
+
+  const text = `${coords.lat.toFixed(6)}, ${coords.lng.toFixed(6)}`
+
+  const handleCopy = () => {
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
+  return (
+    <div className="coord-bar">
+      <span className="coord-label">📍</span>
+      <span className="coord-text">{text}</span>
+      <button className="coord-copy" onClick={handleCopy} title="Скопировать координаты">
+        {copied ? '✓' : '⎘'}
+      </button>
+    </div>
+  )
+}
+
+/* ---- MapView ---- */
 export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMosaic, selectedYear, maxYear }) {
   const initialCenter = useMemo(() => [55.2, 29.6], [])
   const cacheBuster   = useMemo(() => (cqlExpr ? Date.now() : undefined), [cqlExpr])
+  const [clickCoords, setClickCoords] = useState(null)
 
   const vectorLayer = selectedYear ? 'pikurr:fields' : 'pikurr:fields_latest'
   const effectiveYear = selectedYear ?? maxYear
@@ -88,31 +118,36 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
     : `image_assessment_${effectiveYear}`
 
   return (
-    <MapContainer center={initialCenter} zoom={9} style={{ height: '100%', width: '100%' }}>
-      <FitBounds bbox={bbox} />
-      <FeatureInfo layerName={vectorLayer} cqlExpr={cqlExpr} />
+    <div style={{ position: 'relative', height: '100%', width: '100%' }}>
+      <MapContainer center={initialCenter} zoom={9} style={{ height: '100%', width: '100%' }}>
+        <FitBounds bbox={bbox} />
+        <FeatureInfo layerName={vectorLayer} cqlExpr={cqlExpr} onMapClick={setClickCoords} />
 
-      {baseLayer === 'osm' && (
-        <TileLayer zIndex={100}
-          url="https://{s}.tile.openstreetmap.de/{z}/{x}/{y}.png"
-          attribution="&copy; OpenStreetMap" />
-      )}
-      {baseLayer === 'esri' && (
-        <TileLayer zIndex={100}
-          url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-          attribution="Tiles &copy; Esri" />
-      )}
-      {showMosaic && (
-        <WMSTileLayer key={`mosaic-${rasterLayer}`} zIndex={300}
-          url={WMS_BASE_URL} version="1.1.1"
-          layers={rasterLayer} format="image/png" transparent />
-      )}
-      {showVectors && (
-        <WMSTileLayer key={vectorLayer} zIndex={500}
-          url={WMS_BASE_URL} version="1.1.1"
-          layers={vectorLayer} format="image/png" transparent
-          params={cqlExpr ? { CQL_FILTER: cqlExpr, time: cacheBuster } : undefined} />
-      )}
-    </MapContainer>
+        {baseLayer === 'osm' && (
+          <TileLayer zIndex={100}
+            url="https://{s}.tile.openstreetmap.de/{z}/{x}/{y}.png"
+            attribution="&copy; OpenStreetMap" />
+        )}
+        {baseLayer === 'esri' && (
+          <TileLayer zIndex={100}
+            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            attribution="Tiles &copy; Esri" />
+        )}
+        {showMosaic && (
+          <WMSTileLayer key={`mosaic-${rasterLayer}`} zIndex={300}
+            url={WMS_BASE_URL} version="1.1.1"
+            layers={rasterLayer} format="image/png" transparent />
+        )}
+        {showVectors && (
+          <WMSTileLayer key={vectorLayer} zIndex={500}
+            url={WMS_BASE_URL} version="1.1.1"
+            layers={vectorLayer} format="image/png" transparent
+            params={cqlExpr ? { CQL_FILTER: cqlExpr, time: cacheBuster } : undefined} />
+        )}
+      </MapContainer>
+
+      {/* Координаты последнего клика (вне MapContainer — не перехватывается Leaflet) */}
+      <CoordBar coords={clickCoords} />
+    </div>
   )
 }

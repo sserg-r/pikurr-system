@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar'
 import MapView from './components/MapView'
 import WmsLegend from './components/WmsLegend'
 import { getBboxByUser, getStatsByUser, getAllUsers, loadYearDistrictData } from './services/geoserver'
+import { FiMenu } from 'react-icons/fi'
 
 function App() {
   const [baseLayer, setBaseLayer] = useState('osm')
@@ -18,6 +19,7 @@ function App() {
   const [availableYears, setAvailableYears] = useState([])
   const [selectedYear, setSelectedYear] = useState(null)
   const [districtsByYear, setDistrictsByYear] = useState({})
+  const [sidebarOpen, setSidebarOpen] = useState(true)
 
   async function handleZoomTo(nrUser) {
     try {
@@ -111,9 +113,19 @@ function App() {
       }
     } catch (e) { console.error(e) }
   }
+  const cqlExpr = (() => {
+    const parts = []
+    if (selectedYear) parts.push(`year = ${selectedYear}`)
+    if (selectedUser) parts.push(`nr_user LIKE '${selectedUser}%'`)
+    else if (selectedDistrict) parts.push(`nr_user LIKE '${selectedDistrict}%'`)
+    return parts.length ? parts.join(' AND ') : undefined
+  })()
+
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
       <Sidebar
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
         baseLayer={baseLayer}
         setBaseLayer={setBaseLayer}
         usersByDistrict={usersByDistrict}
@@ -129,23 +141,27 @@ function App() {
         districtsByYear={districtsByYear}
       />
       <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+        {/* Кнопка открытия панели (burger) — видна только когда панель скрыта */}
+        {!sidebarOpen && (
+          <button
+            className="sidebar-open-btn"
+            onClick={() => setSidebarOpen(true)}
+            title="Открыть панель"
+          >
+            <FiMenu size={20} />
+          </button>
+        )}
         <MapView
           baseLayer={baseLayer}
           bbox={bbox}
           maxYear={availableYears.length > 0 ? availableYears[availableYears.length - 1] : null}
-          cqlExpr={(() => {
-            const parts = []
-            if (selectedYear) parts.push(`year = ${selectedYear}`)
-            if (selectedUser) parts.push(`nr_user LIKE '${selectedUser}%'`)
-            else if (selectedDistrict) parts.push(`nr_user LIKE '${selectedDistrict}%'`)
-            return parts.length ? parts.join(' AND ') : undefined
-          })()}
+          cqlExpr={cqlExpr}
           showVectors={showVectors}
           showMosaic={showMosaic}
           selectedYear={selectedYear}
         />
         {showMosaic && (
-          <div style={{ position: 'absolute', right: 0, bottom: 0 }}>
+          <div style={{ position: 'absolute', right: 0, bottom: 32 }}>
             <WmsLegend layer="image_assessment" title="AI оценка" floating />
           </div>
         )}
