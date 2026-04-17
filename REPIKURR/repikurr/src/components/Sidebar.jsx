@@ -66,6 +66,7 @@ export default function Sidebar({
     setOblastId('');
     setDistrictId('');
     setNrUser('');
+    onSelectUser?.('', '');
     onReset?.();
   }
 

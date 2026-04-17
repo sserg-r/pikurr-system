@@ -1,5 +1,5 @@
 import 'leaflet/dist/leaflet.css'
-import { MapContainer, TileLayer, WMSTileLayer, Popup, useMap, useMapEvents } from 'react-leaflet'
+import { MapContainer, TileLayer, WMSTileLayer, ZoomControl, Popup, useMap, useMapEvents } from 'react-leaflet'
 import { WMS_BASE_URL } from '../constants'
 import { useEffect, useMemo, useState } from 'react'
 import './MapView.css'
@@ -80,16 +80,6 @@ function FeatureInfo({ layerName, cqlExpr, onMapClick }) {
   ) : null
 }
 
-/* ---- WMS tile loading indicator ---- */
-function TileLoadTracker({ onLoadingChange }) {
-  useMapEvents({
-    tileloadstart: () => onLoadingChange(n => n + 1),
-    tileload:      () => onLoadingChange(n => Math.max(0, n - 1)),
-    tileerror:     () => onLoadingChange(n => Math.max(0, n - 1)),
-  })
-  return null
-}
-
 /* ---- Coordinate bar (показывает координаты последнего клика) ---- */
 function CoordBar({ coords }) {
   const [copied, setCopied] = useState(false)
@@ -122,6 +112,12 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
   const [clickCoords, setClickCoords] = useState(null)
   const [loadingTiles, setLoadingTiles] = useState(0)
 
+  const tileHandlers = useMemo(() => ({
+    tileloadstart: () => setLoadingTiles(n => n + 1),
+    tileload:      () => setLoadingTiles(n => Math.max(0, n - 1)),
+    tileerror:     () => setLoadingTiles(n => Math.max(0, n - 1)),
+  }), [])
+
   const vectorLayer = selectedYear ? 'pikurr:fields' : 'pikurr:fields_latest'
   const effectiveYear = selectedYear ?? maxYear
   const rasterLayer = (!effectiveYear || effectiveYear === maxYear)
@@ -130,9 +126,9 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
 
   return (
     <div style={{ position: 'relative', height: '100%', width: '100%' }}>
-      <MapContainer center={initialCenter} zoom={9} style={{ height: '100%', width: '100%' }}>
+      <MapContainer center={initialCenter} zoom={9} zoomControl={false} style={{ height: '100%', width: '100%' }}>
+        <ZoomControl position="topright" />
         <FitBounds bbox={bbox} />
-        <TileLoadTracker onLoadingChange={setLoadingTiles} />
         <FeatureInfo layerName={vectorLayer} cqlExpr={cqlExpr} onMapClick={setClickCoords} />
 
         {baseLayer === 'osm' && (
@@ -148,13 +144,15 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
         {showMosaic && (
           <WMSTileLayer key={`mosaic-${rasterLayer}`} zIndex={300}
             url={WMS_BASE_URL} version="1.1.1"
-            layers={rasterLayer} format="image/png" transparent />
+            layers={rasterLayer} format="image/png" transparent
+            eventHandlers={tileHandlers} />
         )}
         {showVectors && (
           <WMSTileLayer key={vectorLayer} zIndex={500}
             url={WMS_BASE_URL} version="1.1.1"
             layers={vectorLayer} format="image/png" transparent
-            params={cqlExpr ? { CQL_FILTER: cqlExpr, time: cacheBuster } : undefined} />
+            params={cqlExpr ? { CQL_FILTER: cqlExpr, time: cacheBuster } : undefined}
+            eventHandlers={tileHandlers} />
         )}
       </MapContainer>
 
