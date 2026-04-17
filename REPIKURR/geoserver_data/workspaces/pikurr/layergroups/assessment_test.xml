@@ -1,0 +1,41 @@
+<layerGroup>
+  <id>LayerGroupInfoImpl-3b2062f8:196f69bfa46:-7fd8</id>
+  <name>assessment_test</name>
+  <mode>SINGLE</mode>
+  <workspace>
+    <id>WorkspaceInfoImpl-3b2062f8:196f69bfa46:-7ff6</id>
+  </workspace>
+  <internationalTitle/>
+  <internationalAbstract/>
+  <publishables>
+    <published type="layer">
+      <id>LayerInfoImpl-3b2062f8:196f69bfa46:-7ff0</id>
+    </published>
+    <published type="layer">
+      <id>LayerInfoImpl-3b2062f8:196f69bfa46:-7fdb</id>
+    </published>
+  </publishables>
+  <styles>
+    <style>
+      <id>StyleInfoImpl-3b2062f8:196f69bfa46:-7ff3</id>
+    </style>
+    <style>
+      <id>StyleInfoImpl-3b2062f8:196f69bfa46:-7fdf</id>
+    </style>
+  </styles>
+  <bounds>
+    <minx>26.43585205078125</minx>
+    <maxx>30.9375</maxx>
+    <miny>54.789601005150445</miny>
+    <maxy>56.12565331475411</maxy>
+    <crs>EPSG:4326</crs>
+  </bounds>
+  <metadata>
+    <entry key="cachingEnabled">false</entry>
+  </metadata>
+  <attribution>
+    <logoWidth>0</logoWidth>
+    <logoHeight>0</logoHeight>
+  </attribution>
+  <dateCreated>2025-05-22 07:37:28.500 UTC</dateCreated>
+</layerGroup>

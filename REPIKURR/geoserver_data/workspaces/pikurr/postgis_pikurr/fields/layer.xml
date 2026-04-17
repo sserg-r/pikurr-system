@@ -1,0 +1,16 @@
+<layer>
+  <name>fields</name>
+  <id>LayerInfoImpl-3b2062f8:196f69bfa46:-7fdb</id>
+  <type>VECTOR</type>
+  <defaultStyle>
+    <id>StyleInfoImpl-3b2062f8:196f69bfa46:-7fdf</id>
+  </defaultStyle>
+  <resource class="featureType">
+    <id>FeatureTypeInfoImpl-3b2062f8:196f69bfa46:-7fdc</id>
+  </resource>
+  <attribution>
+    <logoWidth>0</logoWidth>
+    <logoHeight>0</logoHeight>
+  </attribution>
+  <dateCreated>2025-05-22 07:29:49.367 UTC</dateCreated>
+</layer>

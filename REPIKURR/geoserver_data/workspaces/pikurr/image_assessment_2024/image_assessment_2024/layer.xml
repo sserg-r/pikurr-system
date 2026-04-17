@@ -1,0 +1,19 @@
+<layer>
+  <name>image_assessment_2024</name>
+  <id>LayerInfoImpl-5d769c78:19d9529d7b6:23e5</id>
+  <type>RASTER</type>
+  <defaultStyle>
+    <id>StyleInfoImpl-3b2062f8:196f69bfa46:-7ff3</id>
+  </defaultStyle>
+  <resource class="coverage">
+    <id>CoverageInfoImpl-5d769c78:19d9529d7b6:23e4</id>
+  </resource>
+  <queryable>true</queryable>
+  <opaque>false</opaque>
+  <attribution>
+    <logoWidth>0</logoWidth>
+    <logoHeight>0</logoHeight>
+  </attribution>
+  <dateCreated>2026-04-16 10:50:49.543 UTC</dateCreated>
+  <dateModified>2026-04-16 10:51:00.88 UTC</dateModified>
+</layer>

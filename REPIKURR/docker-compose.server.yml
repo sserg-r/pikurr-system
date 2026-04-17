@@ -1,0 +1,60 @@
+version: '3.8'
+
+# Серверный стек (192.168.251.190).
+# Отличия от local: порт PostGIS 5435 (5432/5433 заняты), react без прямого порта.
+#
+# Запуск:
+#   cd ~/repikurr && docker compose -f docker-compose.server.yml up -d --build
+#
+# Доступ:
+#   React:      http://192.168.251.190
+#   GeoServer:  http://192.168.251.190/geoserver/web  (admin/geoserver)
+#   PostGIS:    localhost:5435  (pikurr/pikurr/pikurr)
+
+services:
+  postgis:
+    image: postgis/postgis:15-3.3
+    container_name: pikurr_srv_postgis
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pikurr
+      POSTGRES_USER: pikurr
+      POSTGRES_PASSWORD: pikurr
+    volumes:
+      - pgdata_server:/var/lib/postgresql/data
+    ports:
+      - "5435:5432"
+
+  geoserver:
+    image: kartoza/geoserver:2.24.2
+    container_name: pikurr_srv_geoserver
+    restart: unless-stopped
+    environment:
+      - GEOSERVER_ADMIN_USER=admin
+      - GEOSERVER_ADMIN_PASSWORD=geoserver
+    ports:
+      - "8090:8080"
+    volumes:
+      - ./geoserver_data:/opt/geoserver/data_dir
+      - ./data:/mnt/data
+
+  react-client:
+    build: ./repikurr
+    container_name: pikurr_srv_react
+    restart: unless-stopped
+    # Порт не пробрасывается — доступ только через nginx
+
+  nginx:
+    image: nginx:alpine
+    container_name: pikurr_srv_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.local.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - react-client
+      - geoserver
+
+volumes:
+  pgdata_server:

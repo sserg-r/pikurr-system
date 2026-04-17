@@ -1,0 +1,16 @@
+<layer>
+  <name>fields_latest</name>
+  <id>LayerInfoImpl-3b2062f8:196f69bfa46:-7faf</id>
+  <type>VECTOR</type>
+  <defaultStyle>
+    <id>StyleInfoImpl-3b2062f8:196f69bfa46:-7fdf</id>
+  </defaultStyle>
+  <resource class="featureType">
+    <id>FeatureTypeInfoImpl-3b2062f8:196f69bfa46:-7fb0</id>
+  </resource>
+  <attribution>
+    <logoWidth>0</logoWidth>
+    <logoHeight>0</logoHeight>
+  </attribution>
+  <dateCreated>2026-04-16 00:00:00.000 UTC</dateCreated>
+</layer>

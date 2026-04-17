@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  postgis:
+    image: postgis/postgis:15-3.3
+    container_name: postgis
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pikurr
+      POSTGRES_USER: pikurr
+      POSTGRES_PASSWORD: pikurr
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  geoserver:
+    image: kartoza/geoserver:2.24.2
+    container_name: geoserver
+    restart: unless-stopped
+    environment:
+      - GEOSERVER_ADMIN_USER=admin
+      - GEOSERVER_ADMIN_PASSWORD=admin
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./geoserver_data:/opt/geoserver/data_dir  # конфигурация GeoServer
+      - ./data:/mnt/data  # TIF, SLD и прочее
+    expose:
+      - "8080"   # доступен внутри сети Docker
+  react-client:
+    build: ./repikurr
+    container_name: react-client
+    restart: unless-stopped
+    expose:
+      - "80"
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - react-client
+      - geoserver
+
+volumes:
+  pgdata:
+ # geoserver_data:

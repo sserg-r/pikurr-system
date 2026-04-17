@@ -100,20 +100,18 @@ def merge_imageset(images: np.ndarray, assembly_pattern: Tuple[int, int],
     
     # Финальная обрезка (crop_size)
     # Оригинал: canvas.crop((0, 0, *crop_size)) - это работает, если crop_size tuple
+    # if crop_size != 0:
+    #     if isinstance(crop_size, (list, tuple)):
+    #          canvas = canvas.crop((0, 0, crop_size[0], crop_size[1]))
+
+    # Финальная обрезка (crop_size)
+    # crop_size приходит как (Height, Width) из numpy.shape
     if crop_size != 0:
         if isinstance(crop_size, (list, tuple)):
-             # PIL crop: (left, top, right, bottom)
-             # crop_size в оригинале был (height, width) из numpy.shape?
-             # В merge_tiles передается 0. В predict_trapeze передается imshape (H, W).
-             # PIL ожидает (width, height) для правой нижней точки.
-             # Проверим старый код: canvas.crop((0, 0, *crop_size)) -> распаковка (H, W) -> (0,0, H, W)?
-             # Если crop_size=(1000, 2000) (H,W), то crop((0,0,1000,2000)) обрежет по X=1000, Y=2000.
-             # Это кажется перепутанным (H vs W), но сохраняем логику, если она работала.
-             # Обычно shape это (Y, X). PIL crop это (X, Y). 
-             # Если оригинал работал, значит crop_size подавался (W, H) или PIL обрезал как есть.
-             # В predict_trapeze было: imshape=canvas.size (это W, H для PIL Image).
-             # Значит crop_size был (W, H).
-             canvas = canvas.crop((0, 0, crop_size[0], crop_size[1]))
+             target_h = crop_size[0]
+             target_w = crop_size[1]
+             # PIL crop ожидает: (left, top, right, bottom) -> (0, 0, Width, Height)
+             canvas = canvas.crop((0, 0, target_w, target_h))   
             
     return canvas
 

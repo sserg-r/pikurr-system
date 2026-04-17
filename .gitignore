@@ -15,6 +15,25 @@
 # Разрешаем папку src и всё её содержимое
 !PIKURR/src/
 !PIKURR/src/**
+# 6. РАЗРЕШАЕМ REPIKURR (фронтенд-стек)
+!REPIKURR/
+!REPIKURR/**
+# Рантайм, данные и кэш GeoServer — не коммитим
+REPIKURR/data/
+REPIKURR/inbox/
+REPIKURR/watchdog.pid
+REPIKURR/watchdog.log
+REPIKURR/fromgeobotanyxyz/
+# geoserver runtime (auto-generated): кэш тайлов, логи, бинарные базы дисковых квот
+REPIKURR/geoserver_data/geoserver_data/
+REPIKURR/geoserver_data/gwc/
+REPIKURR/geoserver_data/gwc-layers/
+REPIKURR/geoserver_data/logs/
+# Кэш React-сборки
+REPIKURR/repikurr/node_modules/
+REPIKURR/repikurr/dist/
+REPIKURR/repikurr/build/
+
 # 5. ЧИСТИМ МУСОР (Даже в разрешенных папках)
 # Эти правила должны быть ниже разрешающих, чтобы перекрыть их
 PIKURR/docker-compose.yml

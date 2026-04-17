@@ -1,0 +1,14 @@
+<coverageStore>
+  <id>CoverageStoreInfoImpl-3b2062f8:196f69bfa46:-7ff4</id>
+  <name>image_assessment</name>
+  <type>ImageMosaic</type>
+  <enabled>true</enabled>
+  <workspace>
+    <id>WorkspaceInfoImpl-3b2062f8:196f69bfa46:-7ff6</id>
+  </workspace>
+  <__default>false</__default>
+  <dateCreated>2025-05-22 06:12:32.148 UTC</dateCreated>
+  <dateModified>2026-04-16 06:54:18.569 UTC</dateModified>
+  <disableOnConnFailure>false</disableOnConnFailure>
+  <url>file:///mnt/data/geodata/2025/</url>
+</coverageStore>

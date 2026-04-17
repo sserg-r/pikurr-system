@@ -1,0 +1,60 @@
+version: '3.8'
+
+# Локальный стек для разработки и тестирования механизма обновлений.
+# Запуск: см. README ниже в комментариях.
+#
+# 1. Собрать фронтенд:
+#      cd repikurr && npm install && npm run build && cd ..
+# 2. Поднять стек:
+#      docker-compose -f docker-compose.local.yml up -d
+# 3. Открыть: http://localhost
+# 4. GeoServer admin: http://localhost/geoserver/web  (admin/geoserver)
+
+services:
+  postgis:
+    image: postgis/postgis:15-3.3
+    container_name: pikurr_local_postgis
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pikurr
+      POSTGRES_USER: pikurr
+      POSTGRES_PASSWORD: pikurr
+    volumes:
+      - pgdata_local:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"   # 5433 чтобы не конфликтовать с системным postgres
+
+  geoserver:
+    image: kartoza/geoserver:2.24.2
+    container_name: pikurr_local_geoserver
+    restart: unless-stopped
+    environment:
+      - GEOSERVER_ADMIN_USER=admin
+      - GEOSERVER_ADMIN_PASSWORD=geoserver
+    ports:
+      - "8090:8080"
+    volumes:
+      - ./geoserver_data:/opt/geoserver/data_dir
+      - ./data:/mnt/data                          # TIF-файлы из PIKURR outputs
+
+  react-client:
+    build: ./repikurr
+    container_name: pikurr_local_react
+    restart: unless-stopped
+    ports:
+      - "3000:80"   # Прямой доступ к приложению без nginx
+
+  nginx:
+    image: nginx:alpine
+    container_name: pikurr_local_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.local.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - react-client
+      - geoserver
+
+volumes:
+  pgdata_local:

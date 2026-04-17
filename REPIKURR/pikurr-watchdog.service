@@ -1,0 +1,20 @@
+[Unit]
+Description=PIKURR Watchdog — автодоставка данных из inbox
+Documentation=https://github.com/sserg-r/PIKURR_REFACTOR
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/home/user/repikurr
+ExecStart=/usr/bin/python3 /home/user/repikurr/watchdog.py
+Restart=on-failure
+RestartSec=15
+
+# Логи идут в systemd journal (дублируются watchdog'ом в watchdog.log)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
