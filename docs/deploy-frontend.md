@@ -1,7 +1,20 @@
 # Развёртывание внешнего контура (REPIKURR)
 
 Внешний контур — это серверная часть, которую видят пользователи.
-Включает: PostGIS, GeoServer, React-фронтенд и nginx. Работает на сервере **192.168.251.190**.
+Включает: PostGIS, GeoServer, React-фронтенд и nginx.
+
+---
+
+## Параметры окружения
+
+Перед началом определитесь со значениями — они используются во всех командах ниже:
+
+| Параметр | Тестовый сервер | Прод-сервер | Описание |
+|---|---|---|---|
+| `SERVER_IP` | `192.168.251.190` | `158.160.183.235` | IP сервера |
+| `SERVER_USER` | `user` | `sserg` | Пользователь SSH |
+| `DEPLOY_DIR` | `~/repikurr` | `~/repikurr` | Директория развёртывания |
+| `NGINX_CONF` | `nginx.local.conf` | `nginx.conf` | Конфиг nginx (см. ниже) |
 
 ---
 
@@ -22,13 +35,22 @@ inbox/ ── watchdog.py ── deliver.py ── PostGIS + GeoServer (обно
 | `pikurr_srv_react` | — | React SPA (без прямого порта) |
 | `pikurr_srv_nginx` | 80 | Точка входа |
 
-Сервисы:
+---
 
-| Адрес | Описание |
+## nginx: два конфига
+
+| Файл | Когда использовать |
 |---|---|
-| http://192.168.251.190 | Веб-приложение (пользователи) |
-| http://192.168.251.190:8090/geoserver/web | Панель GeoServer (admin/geoserver) |
-| localhost:5435 | PostGIS (pikurr/pikurr/pikurr) |
+| `nginx.local.conf` | Тест/локальная сеть — `server_name _` (любой хост), доступ по IP |
+| `nginx.conf` | Продакшн с доменом — `server_name geobotany.xyz`, redirect www→apex |
+
+`docker-compose.server.yml` по умолчанию монтирует `nginx.local.conf`.
+Для продакшна с доменом нужно изменить строку в `docker-compose.server.yml`:
+
+```yaml
+# nginx.local.conf → nginx.conf:
+- ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+```
 
 ---
 
@@ -37,14 +59,14 @@ inbox/ ── watchdog.py ── deliver.py ── PostGIS + GeoServer (обно
 | Зависимость | Версия |
 |---|---|
 | Docker + Docker Compose v2 | ≥ 24 |
-| Python 3 | ≥ 3.10 (для watchdog и deliver) |
+| Python 3 | ≥ 3.10 (для watchdog и deliver.py) |
 | sudo | для systemd |
-| rsync, git | для получения обновлений кода |
+| git, rsync | для получения кода и данных |
 
-Зависимости для `deliver.py`:
+Python-зависимости для `deliver.py`:
 ```bash
-pip3 install psycopg2-binary requests python-dotenv fiona shapely
-# или через apt:
+pip3 install psycopg2-binary requests
+# или
 sudo apt install python3-psycopg2 python3-requests
 ```
 
@@ -52,23 +74,17 @@ sudo apt install python3-psycopg2 python3-requests
 
 ## Первоначальное развёртывание
 
-### 1. Клонировать репозиторий (sparse checkout)
-
-На сервере нужна только папка `REPIKURR/`:
+### 1. Подготовка репозитория на сервере
 
 ```bash
+# Клонировать с sparse checkout (нужна только папка REPIKURR)
 git clone --no-checkout https://github.com/sserg-r/pikurr-system.git ~/repikurr-repo
 cd ~/repikurr-repo
 git sparse-checkout init --cone
 git sparse-checkout set REPIKURR
 git checkout main
-cp -r REPIKURR/. ~/repikurr/
-```
 
-Или, если репо уже клонирован полностью:
-```bash
-cd ~/repikurr-repo
-git pull
+# Скопировать содержимое REPIKURR в рабочую директорию
 cp -r REPIKURR/. ~/repikurr/
 ```
 
@@ -77,16 +93,28 @@ cp -r REPIKURR/. ~/repikurr/
 ```bash
 cd ~/repikurr
 cp deliver.env.example deliver.env
-nano deliver.env   # заполнить реальными значениями
+nano deliver.env
 ```
 
-| Переменная | Значение |
+Значения для заполнения:
+
+| Переменная | Описание |
 |---|---|
 | `FRONTEND_DB_USER/PASSWORD/NAME` | Данные PostGIS (pikurr/pikurr/pikurr) |
 | `GEOSERVER_USER/PASSWORD` | Данные GeoServer (admin/geoserver) |
-| `PIKURR_INBOX` | `/home/user/repikurr/inbox` |
+| `PIKURR_INBOX` | Полный путь к inbox, например `/home/sserg/repikurr/inbox` |
 
-### 3. Запустить деплой
+### 3. Выбрать nginx-конфиг
+
+**Тест (доступ по IP):** `docker-compose.server.yml` уже настроен на `nginx.local.conf` — ничего не менять.
+
+**Продакшн (домен):** отредактировать `docker-compose.server.yml`:
+```yaml
+# В секции nginx → volumes:
+- ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+```
+
+### 4. Запустить деплой
 
 ```bash
 cd ~/repikurr
@@ -97,7 +125,7 @@ bash deploy.sh
 1. Останавливает старый стек
 2. Создаёт директории `data/geodata/` и `inbox/`
 3. Выставляет права на тома GeoServer
-4. Поднимает контейнеры: `docker compose -f docker-compose.server.yml up -d --build`
+4. Поднимает контейнеры (`docker compose -f docker-compose.server.yml up -d --build`)
 5. Дожидается готовности GeoServer (до 120 сек)
 6. Устанавливает и запускает systemd-сервис `pikurr-watchdog`
 
@@ -106,22 +134,21 @@ bash deploy.sh
 > bash deploy.sh --clean
 > ```
 
-### 4. Проверить статус
+### 5. Проверить
 
 ```bash
 docker compose -f docker-compose.server.yml ps
 sudo systemctl status pikurr-watchdog
 ```
 
-Открыть в браузере: **http://192.168.251.190** — должна открыться карта.
+Открыть в браузере: `http://<SERVER_IP>` — должна открыться карта.
 
 ---
 
 ## Обновление кода фронтенда
 
-При изменении React-приложения (без изменения данных):
-
 ```bash
+# На сервере:
 cd ~/repikurr-repo
 git pull
 cp -r REPIKURR/. ~/repikurr/
@@ -137,7 +164,7 @@ bash deploy.sh
 
 ### Автоматически (рекомендуется)
 
-С машины администратора:
+С машины администратора (конфиг в `.env`):
 ```bash
 ./package_and_push.sh
 # или через дашборд: кнопка «ОТПРАВИТЬ ПАКЕТ НА СЕРВЕР»
@@ -146,7 +173,7 @@ bash deploy.sh
 ### Вручную
 
 ```bash
-rsync -avz outputs/dist/pikurr_update_*.zip user@192.168.251.190:~/repikurr/inbox/
+rsync -avz outputs/dist/pikurr_update_*.zip <SERVER_USER>@<SERVER_IP>:~/repikurr/inbox/
 ```
 
 ### Что происходит после получения пакета
@@ -158,7 +185,7 @@ rsync -avz outputs/dist/pikurr_update_*.zip user@192.168.251.190:~/repikurr/inbo
 3. Загружает вектора (GeoPackage) в PostGIS через `ogr2ogr`
 4. Пересоздаёт SQL-вьюхи из `create_assessment_schema.sql`
 5. Перезагружает хранилища растров в GeoServer через REST API
-6. Переименовывает ZIP в `delivered_<...>.zip` (не трогается повторно)
+6. Переименовывает ZIP в `delivered_<...>.zip`
 
 Логи доставки:
 ```bash
@@ -171,8 +198,8 @@ tail -f ~/repikurr/watchdog.log
 
 ## GeoServer: слои и стили
 
-Конфигурация GeoServer хранится в `REPIKURR/geoserver_data/` и монтируется в контейнер.
-**Ничего не настраивать вручную через веб-интерфейс** — все настройки в файлах.
+Конфигурация хранится в `geoserver_data/` и монтируется в контейнер.
+**Не менять настройки через веб-интерфейс** — все настройки в файлах репозитория.
 
 | Слой | Источник | Назначение |
 |---|---|---|
@@ -182,19 +209,14 @@ tail -f ~/repikurr/watchdog.log
 | `pikurr:image_assessment` | ImageMosaic → `data/geodata/2025/` | Растр последнего года |
 | `pikurr:image_assessment_2024` | ImageMosaic → `data/geodata/2024/` | Растр 2024 |
 
-Стили:
-- `pikurr:agrifields1` — векторный слой полей (классификация по `valuation`)
-- `pikurr:raster_vegetation` — растровый слой растительности
-
-При добавлении нового года растров нужно:
-1. Добавить новый ImageMosaic store через REST API (или вручную скопировать конфиг из `workspaces/pikurr/image_assessment_2024/`)
-2. Добавить слой `image_assessment_{year}` в GeoServer
+При добавлении нового года растров:
+1. Скопировать конфиг `geoserver_data/workspaces/pikurr/image_assessment_2024/` → `image_assessment_{year}/`
+2. Исправить пути внутри `coveragestore.xml` и `coverage.xml`
+3. Перезапустить GeoServer: `docker restart pikurr_srv_geoserver`
 
 ---
 
-## PostGIS: схема базы данных
-
-Таблицы (создаются `deliver.py` при первой доставке):
+## PostGIS: схема
 
 | Таблица | Описание |
 |---|---|
@@ -202,26 +224,12 @@ tail -f ~/repikurr/watchdog.log
 | `razgrafka` | Сетка трапеций |
 | `assessment` | Статистика по полям (stats JSON, год) |
 
-Вьюхи (пересоздаются при каждой доставке):
+Вьюхи пересоздаются автоматически при каждой доставке пакета.
 
-| Вьюха | Описание |
-|---|---|
-| `assessment_ready` | JOIN agrifields + assessment, все годы |
-| `assessment_ready_latest` | То же, только свежайший год на поле |
-
-Подключение для диагностики:
 ```bash
+# Подключение:
 psql -h localhost -p 5435 -U pikurr -d pikurr
 ```
-
----
-
-## nginx
-
-Конфигурация: `REPIKURR/nginx.local.conf`
-
-- `/` → React SPA (проксируется в `react-client`)
-- `/geoserver/` → GeoServer (проксируется в `geoserver:8080`)
 
 ---
 
@@ -231,23 +239,19 @@ psql -h localhost -p 5435 -U pikurr -d pikurr
 # Статус контейнеров
 docker compose -f ~/repikurr/docker-compose.server.yml ps
 
-# Логи GeoServer
+# Логи сервисов
 docker logs pikurr_srv_geoserver -f
-
-# Логи nginx
 docker logs pikurr_srv_nginx -f
 
-# Статус и логи watchdog
+# Watchdog
 sudo systemctl status pikurr-watchdog
 journalctl -fu pikurr-watchdog
-
-# Перезапуск watchdog вручную
 sudo systemctl restart pikurr-watchdog
 
-# Проверить что GeoServer отвечает
+# Проверить GeoServer REST
 curl -s -u admin:geoserver http://localhost:8090/geoserver/rest/workspaces.json | python3 -m json.tool
 
-# Проверить подключение к PostGIS
+# PostGIS
 psql -h localhost -p 5435 -U pikurr -d pikurr -c "SELECT COUNT(*) FROM assessment;"
 ```
 
@@ -255,11 +259,9 @@ psql -h localhost -p 5435 -U pikurr -d pikurr -c "SELECT COUNT(*) FROM assessmen
 
 ## Типичные проблемы
 
-### GeoServer не отдаёт тайлы после обновления растров
+### GeoServer не обновляет растры
 
-GeoServer кэширует ImageMosaic. После доставки нового пакета `deliver.py` автоматически
-сбрасывает кэш через REST API. Если этого не произошло — сбросить вручную:
-
+`deliver.py` сбрасывает кэш автоматически. Если не помогло — вручную:
 ```bash
 curl -X DELETE -u admin:geoserver \
   http://localhost:8090/geoserver/rest/workspaces/pikurr/coveragestores/image_assessment/coverages/image_assessment/reset
@@ -268,13 +270,10 @@ curl -X DELETE -u admin:geoserver \
 ### Watchdog не подхватывает пакет
 
 ```bash
-# Проверить что сервис запущен
 sudo systemctl status pikurr-watchdog
-
-# Проверить что файл в inbox
 ls -la ~/repikurr/inbox/
 
-# Запустить deliver.py вручную
+# Запустить deliver.py вручную:
 cd ~/repikurr
 source deliver.env
 python3 deliver.py ~/repikurr/inbox/pikurr_update_*.zip

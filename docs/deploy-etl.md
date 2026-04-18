@@ -152,7 +152,7 @@ docker compose run --rm etl python -m src.tasks.<task>
 3. По завершении — пакет появится в `outputs/dist/pikurr_update_<years>_<date>.zip`
 4. Отправить на сервер (кнопка в дашборде, `./package_and_push.sh`, или вручную):
    ```bash
-   rsync -avz outputs/dist/pikurr_update_*.zip user@192.168.251.190:~/repikurr/inbox/
+   rsync -avz outputs/dist/pikurr_update_*.zip <SERVER_USER>@<SERVER_IP>:~/repikurr/inbox/
    ```
 5. Watchdog на сервере подхватит пакет автоматически
 
@@ -168,12 +168,12 @@ ls ~/.ssh/id_rsa
 Если ключа нет — сгенерировать и скопировать на сервер:
 ```bash
 ssh-keygen -t rsa -b 4096
-ssh-copy-id user@192.168.251.190
+ssh-copy-id <SERVER_USER>@<SERVER_IP>
 ```
 
 Проверить связь:
 ```bash
-ssh user@192.168.251.190 "echo OK"
+ssh <SERVER_USER>@<SERVER_IP> "echo OK"
 ```
 
 ---
