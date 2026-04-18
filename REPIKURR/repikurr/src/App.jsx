@@ -81,6 +81,16 @@ function App() {
       .catch(e => console.error(e))
   }
 
+  // Сброс всех фильтров
+  function handleReset() {
+    setSelectedUser('')
+    setSelectedDistrict('')
+    setBbox(null)
+    setStats(null)
+    if (availableYears.length > 0)
+      setSelectedYear(availableYears[availableYears.length - 1])
+  }
+
   // автодействия при выборе пользователя
   async function handleSelectUser(userCode, districtId) {
     setSelectedUser(userCode)
@@ -126,6 +136,7 @@ function App() {
       <Sidebar
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
+        onReset={handleReset}
         baseLayer={baseLayer}
         setBaseLayer={setBaseLayer}
         usersByDistrict={usersByDistrict}

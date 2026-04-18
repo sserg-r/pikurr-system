@@ -29,6 +29,14 @@ REPIKURR/geoserver_data/geoserver_data/
 REPIKURR/geoserver_data/gwc/
 REPIKURR/geoserver_data/gwc-layers/
 REPIKURR/geoserver_data/logs/
+REPIKURR/geoserver_data/temp/
+REPIKURR/geoserver_data/tmp/
+REPIKURR/geoserver_data/monitoring/monitor_*/
+# Credentials — не коммитим
+REPIKURR/geoserver_data/security/masterpw.digest
+REPIKURR/geoserver_data/security/masterpw/default/passwd
+REPIKURR/geoserver_data/security/geoserver.jceks
+REPIKURR/geoserver_data/tomcat_pass.txt
 # Кэш React-сборки
 REPIKURR/repikurr/node_modules/
 REPIKURR/repikurr/dist/
@@ -37,6 +45,7 @@ REPIKURR/repikurr/build/
 # 5. ЧИСТИМ МУСОР (Даже в разрешенных папках)
 # Эти правила должны быть ниже разрешающих, чтобы перекрыть их
 PIKURR/docker-compose.yml
+PIKURR/src/tasks/segmentate_old.py
 __pycache__/
 *.pyc
 .DS_Store
