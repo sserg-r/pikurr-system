@@ -17,6 +17,7 @@ from src.services.db import DatabaseService
 from src.services.notifier import TelegramNotifier
 from src.tasks.export import ExportTask
 from src.tasks.package import PackageTask
+from src.tasks.push import PushTask
 
 # --- 1. НАСТРОЙКА СТРАНИЦЫ ---
 st.set_page_config(
@@ -114,13 +115,22 @@ col_ctrl, col_logs = st.columns([4, 6])
 with col_ctrl:
     st.subheader("🚀 Запуск пайплайна")
     
+    import os
+    delivery_configured = bool(os.environ.get('DELIVERY_HOST', ''))
+
     start_btn = st.button("ЗАПУСТИТЬ ПОЛНЫЙ ЦИКЛ (ETL)", type="primary", use_container_width=True)
-    
+    push_btn  = st.button(
+        "📤 ОТПРАВИТЬ ПАКЕТ НА СЕРВЕР",
+        use_container_width=True,
+        disabled=not delivery_configured,
+        help="Требует DELIVERY_HOST в .env" if not delivery_configured else "rsync последнего пакета на сервер"
+    )
+
     st.markdown("### 📝 Этапы выполнения")
-    
+
     # Сетка статусов (2 колонки)
     gc1, gc2 = st.columns(2)
-    
+
     steps_ui = {
         1: gc1.empty(),
         2: gc2.empty(),
@@ -129,9 +139,10 @@ with col_ctrl:
         5: gc1.empty(),
         6: gc2.empty(),
         7: gc1.empty(),
-        8: gc2.empty()
+        8: gc2.empty(),
+        9: gc1.empty(),
     }
-    
+
     # Начальное состояние
     steps_ui[1].info("1. Инициализация")
     steps_ui[2].info("2. Загрузка тайлов")
@@ -141,6 +152,10 @@ with col_ctrl:
     steps_ui[6].info("6. Статистика БД")
     steps_ui[7].info("7. Публикация данных")
     steps_ui[8].info("8. Сбор пакета обновлений")
+    if delivery_configured:
+        steps_ui[9].info("9. Отправка на сервер")
+    else:
+        steps_ui[9].empty()
 
 with col_logs:
     st.subheader("📋 Системный журнал")
@@ -214,6 +229,12 @@ def run_pipeline():
             PackageTask().run()
             steps_ui[8].success("✅ 8. Архивация: OK")
 
+            # --- STEP 9 (опционально) ---
+            if delivery_configured:
+                steps_ui[9].warning("⏳ 9. Отправка на сервер...")
+                PushTask().run()
+                steps_ui[9].success("✅ 9. Отправка: OK")
+
         st.balloons()
         st.success("🎉 Обработка завершена успешно!")
 
@@ -254,9 +275,36 @@ def show_results():
     except:
         pass
 
-# Обработка кнопки
+def run_push():
+    log_buffer = StringIO()
+    root_logger = logging.getLogger()
+    for h in root_logger.handlers: root_logger.removeHandler(h)
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
+    handler = StreamlitLogHandler(log_widget, log_buffer)
+    handler.setFormatter(formatter)
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.INFO)
+
+    try:
+        steps_ui[9].warning("⏳ 9. Отправка на сервер...")
+        with contextlib.redirect_stdout(StreamlitStdout(log_widget, log_buffer)):
+            PushTask().run()
+        steps_ui[9].success("✅ 9. Отправка: OK")
+        st.success("📤 Пакет успешно отправлен на сервер!")
+    except Exception as e:
+        steps_ui[9].error("❌ 9. Ошибка отправки")
+        import traceback
+        log_buffer.write(f"\nERROR:\n{traceback.format_exc()}")
+        log_widget.code(log_buffer.getvalue(), language="text")
+        st.error(str(e))
+
+
+# Обработка кнопок
 if start_btn:
-    log_widget.code("", language="text") # Очистка
+    log_widget.code("", language="text")
     run_pipeline()
+elif push_btn:
+    log_widget.code("", language="text")
+    run_push()
 else:
     show_results()

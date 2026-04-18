@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y \
     libgdal-dev \
     gcc \
     g++ \
+    rsync \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Настройка переменных для GDAL (чтобы Python его нашел)

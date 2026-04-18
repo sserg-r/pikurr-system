@@ -56,10 +56,12 @@ services:
       tf-serving:
         condition: service_started
     volumes:
-      # Монтируем входные данные (Read-Only)     
+      # Монтируем входные данные (Read-Only)
       - ${HOST_INPUT_DIR}:${PATHS__DATA_INPUT}:ro
       # Монтируем выходные данные (Read-Write)
       - ${HOST_OUTPUT_DIR}:${PATHS__DATA_OUTPUT}
+      # SSH-ключ для rsync (Read-Only). Путь задаётся в .env через DELIVERY_SSH_KEY.
+      - ${DELIVERY_SSH_KEY:-~/.ssh/id_rsa}:/root/.ssh/id_rsa:ro
     env_file:
       - .env  # Специальный env для докера
     ports:
