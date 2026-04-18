@@ -31,7 +31,35 @@ const VALUATION_RU = {
   tillage:  'пахотное с/х',
 }
 
-// Заменяет английские названия категорий растительности в HTML-таблице на русские
+// Таблица растительности из stats JSON (новые данные)
+const STATS_LABELS = { '0':'лес', '1':'кустарник', '2':'закуст. луг', '3':'луг', '4':'прочее', '5':'пашня' }
+const STATS_COLORS = { '0':'#4e7626', '1':'#30b646', '2':'#acf189', '3':'#deffcf', '4':'#f8f5c4', '5':'#cba27b' }
+
+function StatsTable({ statsRaw }) {
+  let stats
+  try { stats = typeof statsRaw === 'string' ? JSON.parse(statsRaw) : statsRaw } catch { return null }
+  const rows = Object.entries(stats)
+    .filter(([, v]) => Number(v) > 0)
+    .sort(([a], [b]) => Number(a) - Number(b))
+  if (!rows.length) return null
+  return (
+    <table className="popup-stats-table">
+      <tbody>
+        {rows.map(([cls, pct]) => (
+          <tr key={cls}>
+            <td>
+              <span className="popup-stats-swatch" style={{ background: STATS_COLORS[cls] || '#999' }} />
+              {STATS_LABELS[cls] || cls}
+            </td>
+            <td className="popup-stats-pct">{(Number(pct) * 100).toFixed(1)}%</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+// Fallback для legacy-данных: перевод английских меток в HTML-таблице
 const DESC_TRANSLATIONS = [
   [/\bforest\b/gi,  'лес'],
   [/\bbushes\b/gi,  'кустарник'],
@@ -88,12 +116,15 @@ function FeatureInfo({ layerName, cqlExpr, onMapClick }) {
     <Popup position={popup.latlng} onClose={() => setPopup(null)}>
       <div className="map-popup">
         <h3>Детали участка</h3>
-        {props?.description && (
-          <div
-            className="popup-description"
-            dangerouslySetInnerHTML={{ __html: translateDescHtml(props.description) }}
-          />
-        )}
+        {props?.stats
+          ? <StatsTable statsRaw={props.stats} />
+          : props?.description && (
+              <div
+                className="popup-description"
+                dangerouslySetInnerHTML={{ __html: translateDescHtml(props.description) }}
+              />
+            )
+        }
         <div className="popup-properties">
           {SHOWN_KEYS
             .filter(k => props[k] !== undefined && props[k] !== null)

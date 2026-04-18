@@ -7,10 +7,10 @@ import pandas as pd
 class DatabaseService:
     def __init__(self, settings: Settings):
         self.settings = settings
-        
+        self._engine = create_engine(self.settings.db.dsn)
+
     def get_engine(self) -> Engine:
-        """Создает и возвращает SQLAlchemy engine"""
-        return create_engine(self.settings.db.dsn)
+        return self._engine
     
     def execute_query(self, query: str, params: dict | None = None) -> pd.DataFrame:
         """Выполняет SQL запрос и возвращает DataFrame"""

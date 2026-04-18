@@ -2,7 +2,6 @@
 Модуль сохранения статистики полей в базу данных
 """
 
-import datetime
 import json
 import logging
 from pathlib import Path
@@ -12,9 +11,12 @@ import pandas as pd
 from shapely.geometry import shape
 from tqdm import tqdm
 
+import datetime
+
 from src.core.config import settings
 from src.services.db import DatabaseService
 from src.utils.postclassify import calculate_zonal_stats
+from src.utils.timeutils import get_target_year
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +29,7 @@ class SaveStatsTask:
         self.final_dir = settings.paths.predictions_final
 
     def get_target_year(self) -> int:
-        """Определяет текущий год для статистики"""
-        now = datetime.datetime.now()
-        if now.month < 11:
-            return now.year - 1
-        else:
-            return now.year
+        return get_target_year()
 
     def get_fields(self) -> pd.DataFrame:
         """Получает список полей с геометриями и фреймами"""
@@ -47,44 +44,23 @@ class SaveStatsTask:
         """
         return self.db.execute_query(query)
 
-    def generate_html(self, stats: Dict[str, float]) -> str:
-        """Генерирует HTML описание на основе статистики"""
-        labels = {0: 'forest', 1: 'bushes', 2: 'bushy', 3: 'meadows', 4: 'other', 5: 'tillage'}
-        palette = {0: "#4e7626", 1: "#30b646", 2: "#acf189", 3: "#deffcf", 4: "#f8f5c4", 5: "#cba27b"}
-
-        descr = '<table><thead><tr><td>veg_type</td><td>percentage</td></tr></thead><tbody>'
-        line = '<tr><td style="background-color:{0}"> {1} </td><td>{2}</td></tr>'
-
-        for class_str, percentage in stats.items():
-            class_id = int(class_str)
-            if class_id in labels:
-                perc_str = f"{percentage:.2f}"
-                descr += line.format(palette[class_id], labels[class_id], perc_str)
-
-        descr += '</tbody></table>'
-        return descr
-
-    def save_stats(self, fid_ext: int, year: int, stats: Dict[str, float], description: str):
+    def save_stats(self, fid_ext: int, year: int, stats: Dict[str, float]):
         """Сохраняет статистику в таблицу assessment"""
         stats_json = json.dumps(stats)
         updated_at = datetime.datetime.now()
 
-        # ИСПОЛЬЗУЕМ ИМЕНОВАННЫЕ ПАРАМЕТРЫ (:param)
         query = """
-        INSERT INTO assessment (fid_ext, year, stats, description, updated_at)
-        VALUES (:fid_ext, :year, :stats, :description, :updated_at)
+        INSERT INTO assessment (fid_ext, year, stats, updated_at)
+        VALUES (:fid_ext, :year, :stats, :updated_at)
         ON CONFLICT (fid_ext, year) DO UPDATE SET
             stats = EXCLUDED.stats,
-            description = EXCLUDED.description,
             updated_at = EXCLUDED.updated_at
         """
 
-        # Передаем СЛОВАРЬ
         params = {
             'fid_ext': fid_ext,
             'year': year,
             'stats': stats_json,
-            'description': description,
             'updated_at': updated_at
         }
 
@@ -115,12 +91,7 @@ class SaveStatsTask:
         if not stats:
             return
 
-        html_description = self.generate_html(stats)
-        # html_description='trash'
-        # print(stats)
-        # print(html_description)
-        
-        self.save_stats(nr_user, year, stats, html_description)
+        self.save_stats(nr_user, year, stats)
 
     def run(self):
         year = self.get_target_year()

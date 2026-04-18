@@ -1,4 +1,3 @@
-import datetime
 import logging
 from pathlib import Path
 from typing import List, Dict
@@ -11,6 +10,7 @@ from tqdm import tqdm
 
 from src.core.config import settings
 from src.services.db import DatabaseService
+from src.utils.timeutils import get_target_year
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +35,7 @@ class ExportTask:
         })
 
     def get_target_year(self) -> int:
-        now = datetime.datetime.now()
-        if now.month < 11:
-            return now.year - 1
-        return now.year
+        return get_target_year()
 
     def get_trapezes(self) -> List[str]:
         query = f"SELECT name FROM {self.trap_table}"

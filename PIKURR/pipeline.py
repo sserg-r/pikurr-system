@@ -27,12 +27,11 @@ def main():
     try:
         # 1. Инициализация (Загрузка GeoJSON/Shapefiles в PostGIS)
         logger.info("[STEP 1/8] Initialization...")
-        # InitializeTask в __init__ принимает settings
-        InitializeTask(settings).run()
-        
+        InitializeTask().run()
+
         # 2. Загрузка тайлов
         logger.info("[STEP 2/8] Downloading Tiles...")
-        DownloadTilesTask(settings).run()
+        DownloadTilesTask().run()
         
         # 3. Сегментация (TF Serving)
         logger.info("[STEP 3/8] Segmentation...")

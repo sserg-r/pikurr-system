@@ -1,4 +1,3 @@
-import datetime
 import logging
 from pathlib import Path
 from typing import List
@@ -12,6 +11,7 @@ from tqdm import tqdm
 
 from src.core.config import settings
 from src.services.db import DatabaseService
+from src.utils.timeutils import get_target_years
 
 # Настройка логгера
 logger = logging.getLogger(__name__)
@@ -39,14 +39,7 @@ class ClassificationTask:
             return df['trapeze'].tolist()
 
     def get_target_years(self) -> range:
-        """Определяет диапазон лет (текущий и 2 предыдущих)"""
-        now = datetime.datetime.now()
-        # Если месяц < 11, считаем, что сезон еще не закончился, берем прошлый год как текущий
-        if now.month < 11:
-            curyear = now.year - 1
-        else:
-            curyear = now.year
-        return range(curyear - 2, curyear + 1)
+        return get_target_years(count=3)
 
     def process_trapeze(self, trap_id: str, years: range):
         """

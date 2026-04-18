@@ -1,4 +1,3 @@
-import datetime
 import logging
 from pathlib import Path
 from typing import List
@@ -11,6 +10,7 @@ from src.core.config import settings
 from src.services.db import DatabaseService
 from src.services.gee import GEEService
 from src.utils.analysis import calculate_usability_metric
+from src.utils.timeutils import get_target_years
 
 # Настройка логгера
 logger = logging.getLogger(__name__)
@@ -61,14 +61,7 @@ class UsabilityTask:
         return [row['xmin'], row['ymin'], row['xmax'], row['ymax']]
 
     def get_target_years(self) -> range:
-        """Определяет диапазон лет для анализа"""
-        now = datetime.datetime.now()
-        if now.month < 11:
-            curyear = now.year - 1
-        else:
-            curyear = now.year
-            
-        return range(curyear - 2, curyear + 1)
+        return get_target_years(count=3)
 
     def process_trapeze(self, trap_name: str, year: int, output_path: Path):
         try:
