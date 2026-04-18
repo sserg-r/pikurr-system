@@ -154,8 +154,7 @@ class ExportTask:
         
         for trap in tqdm(trapezes, desc="Exporting Public Data"):
             self.process_trapeze(trap, year)
-        logger.info(f"Data available on http://geobotany.xyz/geoserver")
-        logger.info(f"Public map available on http://geobotany.xyz")
+        logger.info("Export complete.")
 
 def task_publicdata():
     ExportTask().run()
