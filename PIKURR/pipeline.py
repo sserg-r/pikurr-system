@@ -1,6 +1,5 @@
 import time
 import logging
-from src.core.config import settings
 from src.tasks.initialize import InitializeTask
 from src.tasks.download import DownloadTilesTask
 from src.tasks.segmentate import SegmentationTask
