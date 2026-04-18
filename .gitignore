@@ -5,6 +5,7 @@
 !docker-compose.yml
 !.env_example
 !.dockerignore
+!package_and_push.sh
 # 3. РАЗРЕШАЕМ ВХОД В ПАПКУ PIKURR
 !PIKURR/
 # 4. РАЗРЕШАЕМ ФАЙЛЫ ВНУТРИ PIKURR

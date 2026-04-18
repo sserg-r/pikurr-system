@@ -19,9 +19,9 @@ export default function StatsTable({ data }) {
   const rows = data?.AggregationResults || []
   let totalCount = 0
   let totalSum   = 0
-  rows.forEach(([, count, sum]) => {
-    totalCount += Number(count) || 0
-    totalSum   += Number(sum)   || 0
+  rows.forEach(([, area, fieldCount]) => {
+    totalCount += Number(area)       || 0
+    totalSum   += Number(fieldCount) || 0
   })
 
   return (
@@ -38,7 +38,7 @@ export default function StatsTable({ data }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map(([val, count, sum]) => (
+          {rows.map(([val, area, fieldCount]) => (
             <tr key={val}>
               <td>
                 <div className="stats-cell-label">
@@ -46,8 +46,8 @@ export default function StatsTable({ data }) {
                   {VALUE_LABELS[val] || val}
                 </div>
               </td>
-              <td className="value-cell">{Number(count).toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</td>
-              <td className="value-cell">{Number(sum).toFixed(0)}</td>
+              <td className="value-cell">{Number(area).toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</td>
+              <td className="value-cell">{Number(fieldCount).toFixed(0)}</td>
             </tr>
           ))}
           <tr className="total-row">
