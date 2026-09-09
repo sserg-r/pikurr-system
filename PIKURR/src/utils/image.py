@@ -3,11 +3,19 @@
 Восстановлена оригинальная логика PIKURR для сохранения геопривязки.
 """
 import math
+import re
 import numpy as np
 from PIL import Image
 from glob import glob
 from pathlib import Path
 from typing import Tuple, Dict, Union, List
+
+# Имя тайла: {z}_{x}_{y}, расширение — из белого списка. Сетка в merge_tiles
+# выводится из количества файлов, поэтому посторонний файл в папке листа
+# (temp-файл, .DS_Store, служебный json и т.п.) молча портит lines_count и
+# перекашивает склейку. См. prompts/PROMPT_dzz_export_round3.md, п.2.
+_TILE_STEM_RE = re.compile(r'^\d+_\d+_\d+$')
+_TILE_EXTENSIONS = {'.jpg', '.jpeg', '.png'}
 
 def split_image(img: np.ndarray, window_size: int = 256, overlap: int = 10) -> Dict:
     """
@@ -121,7 +129,10 @@ def merge_tiles(tile_path: Union[str, Path]) -> Union[Image.Image, None]:
     Склейка тайлов из папки.
     """
     path_str = str(tile_path)
-    pathes = glob(path_str + '/*')
+    pathes = [
+        p for p in glob(path_str + '/*')
+        if Path(p).suffix.lower() in _TILE_EXTENSIONS and _TILE_STEM_RE.match(Path(p).stem)
+    ]
     if not pathes:
         return None
 
