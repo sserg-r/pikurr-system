@@ -23,6 +23,22 @@ class TileServices(BaseModel):
     google: str
     dzz: str
 
+class DZZSettings(BaseModel):
+    """Блочная загрузка geodzz через exportImage. См. prompts/PROMPT_dzz_export_adapter.md."""
+    use_export: bool = True   # false — прежнее потайловое поведение (путь отката)
+    export_base: str          # .../ImageServer, без хвостового /exportImage
+    referer: str              # сервер проверяет Referer; внешняя зависимость,
+                               # может измениться без предупреждения — правится в .env
+    block_tiles: int = 16     # 16*256=4096 — жёсткий потолок maxImageWidth сервера
+    use_pool: bool = True     # общий пул нарезанных тайлов между листами (см. round3, п.1)
+    prefer_export: bool = True
+    block_workers: int = 2
+    block_delay_min: float = 0.5
+    block_delay_max: float = 1.5
+    tile_workers: int = 4
+    tile_delay_min: float = 0.1
+    tile_delay_max: float = 0.4
+
 class DBTables(BaseModel):
     trap: str
     afields: str
@@ -148,6 +164,7 @@ class Settings(BaseSettings):
     db: DBSettings
     gee: GEESettings
     tileservices: TileServices
+    dzz: DZZSettings
     dbtables: DBTables
     # models: Models
     inference: InferenceSettings
