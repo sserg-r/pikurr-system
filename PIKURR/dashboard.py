@@ -91,7 +91,14 @@ class StreamlitLogHandler(logging.Handler):
     def emit(self, record):
         msg = self.format(record)
         self.buffer.write(msg + "\n")
-        self.widget.code(self.buffer.getvalue(), language="text")
+        try:
+            # Обновление UI-виджета доступно только из главного потока Streamlit.
+            # Логи из фоновых ThreadPoolExecutor-воркеров (download.py) не должны
+            # ронять пайплайн из-за NoSessionContext — буфер уже обновлён и
+            # подтянется в виджет при следующем emit() из главного потока.
+            self.widget.code(self.buffer.getvalue(), language="text")
+        except Exception:
+            pass
 
 class StreamlitStdout:
     """Перехват print()"""
@@ -105,7 +112,10 @@ class StreamlitStdout:
             # Добавляем метку времени для принтов
             timestamp = time.strftime("%H:%M:%S")
             self.buffer.write(f"[{timestamp}] [STDOUT] {clean}\n")
-            self.widget.code(self.buffer.getvalue(), language="text")
+            try:
+                self.widget.code(self.buffer.getvalue(), language="text")
+            except Exception:
+                pass
             
     def flush(self): pass
 

@@ -85,6 +85,7 @@ class InitializeTask:
             source_str, # Используем модифицированную строку
             '-t_srs', 'EPSG:4326',
             '-nln', table_name,
+            '-nlt', 'PROMOTE_TO_MULTI',
             '-lco', 'SPATIAL_INDEX=GIST',
             '-lco', 'GEOMETRY_NAME=geom',
             '-overwrite'
