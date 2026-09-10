@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
@@ -25,7 +26,12 @@ from PIL import Image
 
 from src.core.config import settings
 from ..services.db import DatabaseService
-from ..services.dzz_export import fetch_block, fetch_tile_via_export, slice_block
+from ..services.dzz_export import (
+    CatalogUnavailableError,
+    fetch_block,
+    fetch_tile_via_export,
+    slice_block,
+)
 from ..utils.geo import getTileIndex
 from ..utils.http_retry import SourceBannedError, request_with_policy
 
@@ -50,6 +56,12 @@ class DownloadBanned(Exception):
     """Источник вернул 403 — задача остановлена, ретраи не выполнялись."""
 
 
+# Проба exportImage перед фазой A (round5, п.3). Тайл 17/75920/40800 — точка
+# в границах покрытия, успешно получена через exportImage в прогоне
+# 10.09.2026 до инцидента (файл сохранился в _pool/17_75920_40800.jpg).
+_PROBE_X, _PROBE_Y, _PROBE_Z = 75920, 40800, 17
+
+
 class DownloadTilesTask:
     def __init__(self):
         self.config = settings
@@ -66,6 +78,19 @@ class DownloadTilesTask:
         # Выставляется при 403 от любого источника — новые запросы не стартуют.
         self._stop = threading.Event()
 
+        # --- Предохранитель на систематический отказ каталога exportImage
+        # (round5, п.2). Считаются только отказы на различающихся
+        # координатах подряд; любой успешный ответ exportImage сбрасывает
+        # счётчик. Отключение действует до конца прогона (не сбрасывается).
+        self._export_disabled = threading.Event()
+        self._export_lock = threading.Lock()
+        self._export_fail_coords: set = set()
+        self._export_fail_count = 0
+
+        # --- Отдых после каждых N успешных блочных запросов (round5, п.5).
+        self._block_rest_lock = threading.Lock()
+        self._block_success_count = 0
+
     def get_session(self) -> requests.Session:
         """Сессия requests, своя для потока. Host/Referer больше не подменяются
         на уровне сессии (баг: Host: gismap.by уходил на все хосты, включая
@@ -79,6 +104,91 @@ class DownloadTilesTask:
             })
             thread_local.session = session
         return thread_local.session
+
+    # ---------- предохранитель exportImage (round5, п.2) ----------
+
+    def _register_export_success(self) -> None:
+        """Любой успешный ответ exportImage сбрасывает счётчик отказов
+        (но не возвращает уже отключённый источник в строй)."""
+        with self._export_lock:
+            self._export_fail_coords.clear()
+            self._export_fail_count = 0
+
+    def _register_export_failure(self, coord_key: tuple, message: str, sheet_name: str) -> None:
+        """Засчитывает отказ каталога exportImage, только если координата
+        ещё не учтена — иначе реальная дыра в покрытии копила бы счётчик
+        сама на себя и роняла источник без систематической причины."""
+        with self._export_lock:
+            if self._export_disabled.is_set():
+                return
+            if coord_key in self._export_fail_coords:
+                return
+            self._export_fail_coords.add(coord_key)
+            self._export_fail_count += 1
+            threshold = self.dzz_cfg.export_failure_threshold
+            if self._export_fail_count >= threshold:
+                self._export_disabled.set()
+                logger.error(
+                    f"exportImage отключён до конца прогона: {self._export_fail_count} "
+                    f"отказов каталога на разных координатах подряд (порог {threshold}); "
+                    f"лист {sheet_name}; последняя ошибка: {message}; оставшийся объём "
+                    "будет получен через тайловый кэш geodzz, Esri и Google"
+                )
+
+    # ---------- отдых после блока exportImage (round5, п.5) ----------
+
+    def _maybe_rest_after_block(self) -> None:
+        rest_every = self.dzz_cfg.block_rest_every
+        if not rest_every:
+            return
+        with self._block_rest_lock:
+            self._block_success_count += 1
+            should_rest = self._block_success_count % rest_every == 0
+        if should_rest:
+            logger.info(
+                f"Отдых {self.dzz_cfg.block_rest_seconds}с после "
+                f"{self._block_success_count} успешных блочных запросов exportImage "
+                "(снижение нагрузки на сторонний сервис, не связано с инцидентом "
+                "10.09 — см. prompts/PROMPT_dzz_export_round5.md, п.5)"
+            )
+            time.sleep(self.dzz_cfg.block_rest_seconds)
+
+    # ---------- проба перед фазой A (round5, п.3) ----------
+
+    def _probe_export(self) -> None:
+        """Один пробный запрос exportImage перед первым листом. Если каталог
+        уже недоступен на старте — фаза A не выполняется ни для одного листа
+        (экономит часы бесполезных запросов на сценарии «сервис лежал ещё до
+        запуска»)."""
+        session = self.get_session()
+        try:
+            img = fetch_tile_via_export(
+                session, self.dzz_cfg.export_base, self.dzz_cfg.referer,
+                _PROBE_X, _PROBE_Y, z=_PROBE_Z, delay_range=self.tile_delay,
+            )
+        except SourceBannedError as exc:
+            # 401/403 — тот же сигнал остановки всей задачи, что и в фазах A/B.
+            # Выставляем self._stop сами: run() увидит флаг перед первым
+            # листом и завершится через штатный DownloadBanned.
+            logger.error(str(exc))
+            self._stop.set()
+            return
+        except CatalogUnavailableError as exc:
+            logger.error(
+                f"Проба exportImage перед фазой A не прошла: {exc}. exportImage "
+                "отключён на весь прогон, используется потайловый водопад."
+            )
+            self._export_disabled.set()
+            return
+
+        if img is None:
+            logger.error(
+                "Проба exportImage перед фазой A не прошла (пустой ответ). "
+                "exportImage отключён на весь прогон, используется потайловый водопад."
+            )
+            self._export_disabled.set()
+        else:
+            logger.info("Проба exportImage перед фазой A прошла успешно.")
 
     def get_trapezes(self) -> pd.DataFrame:
         """Получение списка трапеций из БД с подтягиванием геометрии из разграфки"""
@@ -148,6 +258,25 @@ class DownloadTilesTask:
         p = self._pool_tile_path(z, x, y)
         return p.exists() and p.stat().st_size > 0
 
+    # ---------- маркер обработанного блока (round5, п.4) ----------
+    #
+    # Пропуск блока раньше определялся условием «все 256 тайлов блока уже в
+    # пуле» — но тайлы, отбракованные по качеству, в пул не попадают никогда,
+    # поэтому блок с хотя бы одним таким тайлом никогда не станет «полным» и
+    # перезапрашивался бы при обработке каждого соседнего листа. Маркер —
+    # факт обработки, а не подсчёт тайлов.
+
+    def _pool_blocks_dir(self) -> Path:
+        d = self._pool_dir() / "_blocks"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _block_marker_path(self, z: int, bcol: int, brow: int) -> Path:
+        return self._pool_blocks_dir() / f"{z}_{bcol}_{brow}.done"
+
+    def _block_marker_exists(self, z: int, bcol: int, brow: int) -> bool:
+        return self._block_marker_path(z, bcol, brow).exists()
+
     def _link_from_pool(self, trapeze_name: str, z: int, x: int, y: int) -> bool:
         """Жёсткая ссылка (с фоллбэком на копию) из пула в папку листа.
         True — тайл в итоге есть на диске у листа."""
@@ -174,7 +303,7 @@ class DownloadTilesTask:
     ) -> Dict[str, int]:
         """Один блок фазы A. Возвращает счётчики requested/fetched/saved/rejected/from_pool."""
         stats = {"requested": 0, "fetched": 0, "saved": 0, "rejected": 0, "from_pool": 0}
-        if self._stop.is_set():
+        if self._stop.is_set() or self._export_disabled.is_set():
             return stats
 
         block_tiles = self.dzz_cfg.block_tiles
@@ -196,15 +325,11 @@ class DownloadTilesTask:
             if not still_needed:
                 return stats  # весь нужный кусок нашёлся в пуле — сети не касаемся
 
-            all_block_tiles = [
-                (base_x + ix, base_y + iy)
-                for iy in range(block_tiles) for ix in range(block_tiles)
-            ]
-            if all(self._pool_tile_exists(z, x, y) for x, y in all_block_tiles):
-                # Блок уже полностью разобран другим листом: недостающие тайлы —
-                # это те, что тогда не прошли проверку качества. Тот же блок при
-                # повторном запросе даст тот же результат — сеть не трогаем,
-                # добор уйдёт в водопад фазы B.
+            if self._block_marker_exists(z, bcol, brow):
+                # Блок уже обработан другим листом (маркер round5, п.4) —
+                # недостающие тайлы это те, что тогда не прошли проверку
+                # качества. Тот же блок при повторном запросе даст тот же
+                # результат — сеть не трогаем, добор уйдёт в водопад фазы B.
                 return stats
 
         stats["requested"] = 1
@@ -218,10 +343,14 @@ class DownloadTilesTask:
             logger.error(str(exc))
             self._stop.set()
             raise
+        except CatalogUnavailableError as exc:
+            self._register_export_failure(("block", bcol, brow), str(exc), trapeze_name)
+            block_img = None
 
         if block_img is None:
             logger.debug(f"Блок ({bcol},{brow}) листа {trapeze_name}: не получен, добор потайлово в фазе B")
             return stats
+        self._register_export_success()
         stats["fetched"] = 1
 
         # Нарезаем блок целиком (без обрезки по листу) — пул должен получить все
@@ -244,6 +373,14 @@ class DownloadTilesTask:
             else:
                 stats["rejected"] += 1
 
+        # Маркер — только при полном успехе (блок получен, нарезан, все
+        # тайлы проверены/сохранены без исключения). Если что-то выше кинуло
+        # исключение, до этой строки выполнение не дойдёт — повторный запуск
+        # блок дозапросит.
+        if use_pool:
+            self._block_marker_path(z, bcol, brow).touch()
+
+        self._maybe_rest_after_block()
         return stats
 
     # ---------- Фаза B: потайловый водопад ----------
@@ -257,9 +394,10 @@ class DownloadTilesTask:
         session = self.get_session()
 
         dzz_cache = ("dzz-tile", lambda: self._fetch_dzz_tile_cache(session, x, y, z))
-        if self.dzz_cfg.use_export:
-            # USE_EXPORT=false исключает уровень exportImage из водопада целиком
-            # (путь отката к прежним трём источникам: dzz-tile -> esri -> google).
+        # USE_EXPORT=false или предохранитель, сработавший до конца прогона
+        # (round5, п.2), исключают уровень exportImage из водопада целиком
+        # (путь отката к прежним трём источникам: dzz-tile -> esri -> google).
+        if self.dzz_cfg.use_export and not self._export_disabled.is_set():
             dzz_export = ("dzz-export", lambda: self._fetch_dzz_export_tile(session, x, y, z))
             dzz_sources = [dzz_export, dzz_cache] if self.dzz_cfg.prefer_export else [dzz_cache, dzz_export]
         else:
@@ -277,6 +415,12 @@ class DownloadTilesTask:
                 logger.error(str(exc))
                 self._stop.set()
                 raise
+            except CatalogUnavailableError as exc:
+                self._register_export_failure(("tile", x, y), str(exc), trapeze_name)
+                continue
+
+            if name == "dzz-export" and img is not None:
+                self._register_export_success()
 
             if img is None:
                 continue
@@ -346,6 +490,10 @@ class DownloadTilesTask:
         # файлов), и посторонний файл внутри ломает reshape ниже по пайплайну.
         missing_path = self.config.paths.tiles_dir / f"{trapeze_name}_missing.json"
         if missing:
+            # tiles_dir мог не создаться на диске вовсе: если проба отключила
+            # exportImage до фазы A (round5, п.3), а фаза B не сохранила ни
+            # одного тайла листа, ни _tile_path, ни _pool_dir ещё не вызывались.
+            missing_path.parent.mkdir(parents=True, exist_ok=True)
             preview = missing[:20]
             logger.warning(
                 f"Лист {trapeze_name}: недостаёт {len(missing)} тайлов из "
@@ -366,7 +514,7 @@ class DownloadTilesTask:
         block_stats = {"requested": 0, "fetched": 0, "saved": 0, "rejected": 0, "from_pool": 0}
         block_tiles = self.dzz_cfg.block_tiles
 
-        if self.dzz_cfg.use_export:
+        if self.dzz_cfg.use_export and not self._export_disabled.is_set():
             bcol_range = range(min_x // block_tiles, max_x // block_tiles + 1)
             brow_range = range(min_y // block_tiles, max_y // block_tiles + 1)
 
@@ -432,6 +580,9 @@ class DownloadTilesTask:
         trapezes_df = self.get_trapezes()
         total = len(trapezes_df)
         logger.info(f"Found {total} trapezes for processing")
+
+        if self.dzz_cfg.use_export:
+            self._probe_export()
 
         processed = 0
         current_leaf = None

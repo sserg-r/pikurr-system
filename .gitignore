@@ -19,6 +19,9 @@
 # Разрешаем папку src и всё её содержимое
 !PIKURR/src/
 !PIKURR/src/**
+# Разовые скрипты (не часть пайплайна, запускаются вручную)
+!PIKURR/scripts/
+!PIKURR/scripts/**
 # 6. РАЗРЕШАЕМ REPIKURR (фронтенд-стек)
 !REPIKURR/
 !REPIKURR/**

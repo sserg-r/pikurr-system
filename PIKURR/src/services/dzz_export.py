@@ -13,6 +13,29 @@ from ..utils.http_retry import request_with_policy
 
 logger = logging.getLogger(__name__)
 
+
+class CatalogUnavailableError(RuntimeError):
+    """exportImage вернул ошибку каталога mosaic dataset (FDO error, Failed to
+    execute query, Unable to complete operation) — недоступен сам каталог, а
+    не только путь рендеринга (подтверждено query?returnCountOnly=true, тоже
+    падает тем же кодом). См. инцидент 10.09.2026,
+    docs/incident-2026-09-10-exportimage-fdo.md, и round5, п.2-3.
+
+    В отличие от обычного RuntimeError (тайл забракован/не декодировался),
+    это исключение НЕ гасится внутри fetch_block/fetch_tile_via_export —
+    вызывающий код (download.py) должен его увидеть, чтобы считать отказы
+    предохранителя."""
+
+
+# Маркеры ответа каталога mosaic dataset, а не точечного отсутствия тайла.
+# Пустой/бракованный тайл (например, "size больше maxImageWidth") в этот
+# список не входит — такие ошибки предохранитель считать не должен.
+_CATALOG_ERROR_MARKERS = (
+    "FDO error",
+    "Failed to execute query",
+    "Unable to complete operation",
+)
+
 ORIGIN = 20037508.342787
 RES17 = 1.1943285668550503   # level 11 сервиса == стандартный z17
 TILE_SPAN = 256 * RES17       # 305.7481131149 м
@@ -74,6 +97,11 @@ def _parse_image_response(response, context: str) -> Image.Image:
             message = payload.get("error", payload)
         except (json.JSONDecodeError, ValueError):
             message = response.content[:300]
+        text = str(message)
+        if any(marker in text for marker in _CATALOG_ERROR_MARKERS):
+            raise CatalogUnavailableError(
+                f"exportImage ({context}) — каталог мозаики недоступен: {message}"
+            ) from exc
         raise RuntimeError(f"exportImage ({context}) вернул не-изображение: {message}") from exc
 
 
@@ -110,6 +138,8 @@ def fetch_block(
         return None
     try:
         return _parse_image_response(response, f"block {bcol},{brow}")
+    except CatalogUnavailableError:
+        raise
     except RuntimeError as exc:
         logger.warning(str(exc))
         return None
@@ -142,6 +172,8 @@ def fetch_tile_via_export(
         return None
     try:
         return _parse_image_response(response, f"tile {x},{y}")
+    except CatalogUnavailableError:
+        raise
     except RuntimeError as exc:
         logger.warning(str(exc))
         return None

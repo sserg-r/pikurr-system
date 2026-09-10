@@ -32,12 +32,22 @@ class DZZSettings(BaseModel):
     block_tiles: int = 16     # 16*256=4096 — жёсткий потолок maxImageWidth сервера
     use_pool: bool = True     # общий пул нарезанных тайлов между листами (см. round3, п.1)
     prefer_export: bool = True
-    block_workers: int = 2
+    block_workers: int = 1    # было 2; снижение нагрузки на ImageServer, см. round5, п.5 —
+                               # не средство от инцидента 10.09 (тот вызван недоступностью
+                               # каталога мозаики и от темпа запросов не зависит)
     block_delay_min: float = 0.5
     block_delay_max: float = 1.5
     tile_workers: int = 4
     tile_delay_min: float = 0.1
     tile_delay_max: float = 0.4
+    # Пауза после каждых N успешных блочных запросов — даёт очередям на
+    # стороне сервиса разгрузиться. 0 отключает отдых. См. round5, п.5.
+    block_rest_every: int = 100
+    block_rest_seconds: float = 60
+    # Предохранитель на систематический отказ каталога мозаики (FDO error,
+    # Failed to execute query, Unable to complete operation) — считаются
+    # только отказы на различающихся координатах подряд. См. round5, п.2.
+    export_failure_threshold: int = 5
 
 class DBTables(BaseModel):
     trap: str
