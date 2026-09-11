@@ -11,6 +11,7 @@
 import json
 import logging
 import os
+import random
 import shutil
 import threading
 import time
@@ -87,9 +88,14 @@ class DownloadTilesTask:
         self._export_fail_coords: set = set()
         self._export_fail_count = 0
 
-        # --- Отдых после каждых N успешных блочных запросов (round5, п.5).
-        self._block_rest_lock = threading.Lock()
-        self._block_success_count = 0
+        # --- Отдых по времени непрерывной работы + лимит длительности сессии
+        # (уточнённое ТЗ round5(1), п.5).
+        self._rest_lock = threading.Lock()
+        self._work_window_start = time.monotonic()
+        self._rest_after_seconds: Optional[float] = None  # выбирается лениво
+
+        self._session_start = time.monotonic()
+        self._session_stop = threading.Event()
 
     def get_session(self) -> requests.Session:
         """Сессия requests, своя для потока. Host/Referer больше не подменяются
@@ -135,23 +141,56 @@ class DownloadTilesTask:
                     "будет получен через тайловый кэш geodzz, Esri и Google"
                 )
 
-    # ---------- отдых после блока exportImage (round5, п.5) ----------
+    # ---------- отдых по времени непрерывной работы (round5(1), п.5) ----------
+
+    def _pick_rest_after_seconds(self) -> float:
+        return random.uniform(
+            self.dzz_cfg.block_rest_after_min, self.dzz_cfg.block_rest_after_max
+        ) * 60
+
+    def _pick_rest_duration_seconds(self) -> float:
+        return random.uniform(self.dzz_cfg.block_rest_min, self.dzz_cfg.block_rest_max)
 
     def _maybe_rest_after_block(self) -> None:
-        rest_every = self.dzz_cfg.block_rest_every
-        if not rest_every:
-            return
-        with self._block_rest_lock:
-            self._block_success_count += 1
-            should_rest = self._block_success_count % rest_every == 0
-        if should_rest:
-            logger.info(
-                f"Отдых {self.dzz_cfg.block_rest_seconds}с после "
-                f"{self._block_success_count} успешных блочных запросов exportImage "
-                "(снижение нагрузки на сторонний сервис, не связано с инцидентом "
-                "10.09 — см. prompts/PROMPT_dzz_export_round5.md, п.5)"
-            )
-            time.sleep(self.dzz_cfg.block_rest_seconds)
+        """Отдых меряется временем непрерывной работы, а не числом блоков:
+        время рендера блока плавает в разы в зависимости от того, сколько
+        сцен мозаики он задевает, поэтому счёт блоками даёт непредсказуемый
+        интервал в реальном времени — а для стороннего сервиса значение имеет
+        именно оно."""
+        with self._rest_lock:
+            if self._rest_after_seconds is None:
+                self._rest_after_seconds = self._pick_rest_after_seconds()
+            elapsed = time.monotonic() - self._work_window_start
+            if elapsed < self._rest_after_seconds:
+                return
+            rest_seconds = self._pick_rest_duration_seconds()
+
+        logger.info(
+            f"Отдых {rest_seconds:.0f}с после {elapsed / 60:.1f} мин непрерывной "
+            "работы exportImage (снижение нагрузки на сторонний сервис, не "
+            "связано с инцидентом 10.09 — см. "
+            "prompts/PROMPT_dzz_export_round5(1).md, п.5)"
+        )
+        time.sleep(rest_seconds)
+
+        with self._rest_lock:
+            self._work_window_start = time.monotonic()
+            self._rest_after_seconds = self._pick_rest_after_seconds()
+
+    # ---------- лимит длительности сессии (round5(1), п.5) ----------
+
+    def _session_limit_reached(self) -> bool:
+        """По достижении DZZ__SESSION_MAX_MINUTES прогон завершается штатно —
+        новые блоки/тайлы не начинаются, уже начатые дорабатываются. 0
+        отключает ограничение."""
+        max_minutes = self.dzz_cfg.session_max_minutes
+        if not max_minutes:
+            return False
+        if self._session_stop.is_set():
+            return True
+        if time.monotonic() - self._session_start >= max_minutes * 60:
+            self._session_stop.set()
+        return self._session_stop.is_set()
 
     # ---------- проба перед фазой A (round5, п.3) ----------
 
@@ -303,7 +342,7 @@ class DownloadTilesTask:
     ) -> Dict[str, int]:
         """Один блок фазы A. Возвращает счётчики requested/fetched/saved/rejected/from_pool."""
         stats = {"requested": 0, "fetched": 0, "saved": 0, "rejected": 0, "from_pool": 0}
-        if self._stop.is_set() or self._export_disabled.is_set():
+        if self._stop.is_set() or self._export_disabled.is_set() or self._session_limit_reached():
             return stats
 
         block_tiles = self.dzz_cfg.block_tiles
@@ -388,7 +427,7 @@ class DownloadTilesTask:
     def process_tile(self, x: int, y: int, z: int, trapeze_name: str) -> Optional[str]:
         """Водопад для одного тайла. Возвращает имя источника, откуда сохранён
         тайл, либо None, если тайл не добыт ни с одного."""
-        if self._tile_exists(trapeze_name, z, x, y) or self._stop.is_set():
+        if self._tile_exists(trapeze_name, z, x, y) or self._stop.is_set() or self._session_limit_reached():
             return None
 
         session = self.get_session()
@@ -587,13 +626,22 @@ class DownloadTilesTask:
         processed = 0
         current_leaf = None
         for _, row in trapezes_df.iterrows():
-            if self._stop.is_set():
+            if self._stop.is_set() or self._session_stop.is_set():
                 break
             current_leaf = row['name']
             self._process_trapeze(current_leaf, row['geojson'])
             if self._stop.is_set():
                 break
             processed += 1
+            if self._session_limit_reached():
+                remaining = total - processed
+                logger.info(
+                    f"Лимит сессии ({self.dzz_cfg.session_max_minutes} мин) достигнут "
+                    f"после листа {current_leaf}: обработано {processed}/{total}, "
+                    f"осталось {remaining}. Прогон завершается штатно, следующий "
+                    "запуск продолжит с этого места (резюмируемость)."
+                )
+                break
 
         if self._stop.is_set():
             # Уже скачанное на диске (в т.ч. в _pool) не трогаем — резюмируемость
