@@ -7,10 +7,10 @@ import rasterio
 from rasterio.features import sieve
 from skimage.morphology import closing, disk
 from skimage.transform import resize
-from tqdm import tqdm
 
 from src.core.config import settings
 from src.services.db import DatabaseService
+from src.utils.progress import ProgressReporter
 from src.utils.timeutils import get_target_years
 
 # Настройка логгера
@@ -20,11 +20,12 @@ class ClassificationTask:
     def __init__(self):
         self.db = DatabaseService(settings)
         self.trap_table = settings.dbtables.trap
-        
+
         # Пути из конфига
         self.veget_dir = settings.paths.predictions_veget  # Вход: маска растительности
         self.usab_dir = settings.paths.predictions_usab    # Вход: используемость (GEE)
         self.final_dir = settings.paths.predictions_final  # Выход
+        self.progress: ProgressReporter | None = None
 
     def get_trap_list(self) -> List[str]:
         """Получает список имен всех трапеций"""
@@ -152,12 +153,20 @@ class ClassificationTask:
     def run(self):
         trap_list = self.get_trap_list()
         years = self.get_target_years()
-        
+
         print(f"Classification years range: {list(years)}")
         print(f"Target directory: {self.final_dir}")
 
-        for trap in tqdm(trap_list, desc="Classifying"):
+        self.progress = ProgressReporter(
+            name="classify", total_outer=len(trap_list), logger=logger,
+            outer_name="лист", inner_name="листы", rate_unit="лист",
+        )
+        for trap in trap_list:
+            self.progress.start_outer(trap, total_inner=1)
             self.process_trapeze(trap, years)
+            self.progress.tick(1)
+            self.progress.finish_outer()
+        self.progress.finish()
 
 def task_classify():
     task = ClassificationTask()

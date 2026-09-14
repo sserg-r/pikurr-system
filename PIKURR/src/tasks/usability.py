@@ -4,12 +4,12 @@ from typing import List
 
 import numpy as np
 import rasterio
-from tqdm import tqdm
 
 from src.core.config import settings
 from src.services.db import DatabaseService
 from src.services.gee import GEEService
 from src.utils.analysis import calculate_usability_metric
+from src.utils.progress import ProgressReporter
 from src.utils.timeutils import get_target_years
 
 # Настройка логгера
@@ -23,6 +23,7 @@ class UsabilityTask:
         # Добавляем таблицу с геометрией
         self.razgr_table = settings.dbtables.razgr
         self.output_root = settings.paths.predictions_usab
+        self.progress: ProgressReporter | None = None
 
     def get_trap_list(self) -> List[str]:
         """Получает список имен всех трапеций для обработки"""
@@ -110,19 +111,28 @@ class UsabilityTask:
         logger.info(f"Target years: {list(years)}")
         logger.info(f"Total trapezes: {len(trap_list)}")
 
+        self.progress = ProgressReporter(
+            name="usability", total_outer=len(years), logger=logger,
+            outer_name="год", inner_name="поля", rate_unit="поле",
+        )
         for year in years:
             year_dir = self.output_root / str(year)
             year_dir.mkdir(parents=True, exist_ok=True)
-            
+
             logger.info(f"Processing year: {year}")
-            
-            for trap in tqdm(trap_list, desc=f"Year {year}"):
+            self.progress.start_outer(str(year), total_inner=len(trap_list))
+
+            for trap in trap_list:
                 output_path = year_dir / f"{trap}.tif"
-                
+
                 if output_path.exists():
+                    self.progress.tick_skipped(1)
                     continue
-                
+
                 self.process_trapeze(trap, year, output_path)
+                self.progress.tick(1)
+            self.progress.finish_outer()
+        self.progress.finish()
 
 def task_usability():
     task = UsabilityTask()

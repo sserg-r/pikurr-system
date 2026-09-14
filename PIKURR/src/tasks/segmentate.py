@@ -3,13 +3,13 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from PIL import Image
-from tqdm import tqdm
 
 from src.services.db import DatabaseService
 from src.services.inference import InferenceService
 from src.core.config import settings
 from src.utils.image import merge_tiles, split_image, merge_imageset
 from src.utils.geo import get_bbox_for_tileset
+from src.utils.progress import ProgressReporter
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,8 @@ class SegmentationTask:
         self.CLS_BUSHY = 2
         self.CLS_MEADOW = 3
         self.CLS_OTHER = 4
-        
+        self.progress: ProgressReporter | None = None
+
 
     def get_trap_list(self):
         query = f"SELECT name FROM {self.trap_table}"
@@ -48,7 +49,9 @@ class SegmentationTask:
         
         # Инференс
         predictions = self.inference_service.predict_batch(batch)
-        
+        if self.progress is not None:
+            self.progress.tick(batch.shape[0])
+
         # Argmax
         pred_mask = predictions.argmax(axis=3)[..., None]
         
@@ -67,10 +70,10 @@ class SegmentationTask:
         canvas_pil = merge_tiles(str(tile_dir))
         if canvas_pil is None:
             return
-        
+
         # Оригинал (Scale 1.0)
         canvas_full = np.asarray(canvas_pil)
-        
+
         # 1. High-Res Inference
         mask_high = self._predict_full_canvas(canvas_full, overlap=30)
         
@@ -151,19 +154,29 @@ class SegmentationTask:
     def run(self):
         trap_list = self.get_trap_list()
         self.predictions_dir.mkdir(parents=True, exist_ok=True)
-        
-        # logger.info(f"Segmentation started for {len(trap_list)} items")
-        for trap in tqdm(trap_list, desc="Processing trapezoids"):
+
+        to_process = [
+            trap for trap in trap_list
+            if (self.root_tiles_dir / trap).exists()
+            and any((self.root_tiles_dir / trap).iterdir())
+            and not (self.predictions_dir / f"{trap}.tif").exists()
+        ]
+        self.progress = ProgressReporter(
+            name="segmentate", total_outer=len(to_process), logger=logger,
+            outer_name="лист", inner_name="фрагменты", rate_unit="фрагмент",
+        )
+
+        for trap in to_process:
             pred_path = self.predictions_dir / f"{trap}.tif"
             tiles_dir = self.root_tiles_dir / trap
-            
-            if not tiles_dir.exists() or not any(tiles_dir.iterdir()):
-                continue
-            if not pred_path.exists():
-                try:
-                    self.process_trapeze(tiles_dir, pred_path)
-                except Exception as e:
-                    logger.error(f"Error processing {trap}: {e}")
+            self.progress.start_outer(trap)
+            try:
+                self.process_trapeze(tiles_dir, pred_path)
+            except Exception as e:
+                logger.error(f"Error processing {trap}: {e}")
+            self.progress.finish_outer()
+
+        self.progress.finish()
 
 def task_segmentate():
     SegmentationTask().run()

@@ -61,6 +61,13 @@ class DZZSettings(BaseModel):
     # только отказы на различающихся координатах подряд. См. round5, п.2.
     export_failure_threshold: int = 5
 
+class ProgressSettings(BaseModel):
+    """Индикация прогресса длительных задач. См. prompts/PROMPT_progress_round6.md."""
+    enabled: bool = True
+    interval_seconds: float = 30
+    rate_window_seconds: float = 600
+
+
 class DBTables(BaseModel):
     trap: str
     afields: str
@@ -192,6 +199,7 @@ class Settings(BaseSettings):
     inference: InferenceSettings
     telegram: TelegramSettings = TelegramSettings()
     paths: PathConfig
+    progress: ProgressSettings = ProgressSettings()
 
     # @computed_field
     # def paths(self) -> PathConfig:

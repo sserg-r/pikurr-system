@@ -35,6 +35,7 @@ from ..services.dzz_export import (
 )
 from ..utils.geo import getTileIndex
 from ..utils.http_retry import SourceBannedError, request_with_policy
+from ..utils.progress import ProgressReporter
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,10 @@ class DownloadTilesTask:
 
         self._session_start = time.monotonic()
         self._session_stop = threading.Event()
+
+        # Индикация прогресса (round6) — создаётся в run(), где известно total
+        # листов; None при вызове process_block/process_tile напрямую (тесты).
+        self.progress: Optional[ProgressReporter] = None
 
     def get_session(self) -> requests.Session:
         """Сессия requests, своя для потока. Host/Referer больше не подменяются
@@ -172,6 +177,8 @@ class DownloadTilesTask:
             "prompts/PROMPT_dzz_export_round5(1).md, п.5)"
         )
         time.sleep(rest_seconds)
+        if self.progress is not None:
+            self.progress.note_idle(rest_seconds)
 
         with self._rest_lock:
             self._work_window_start = time.monotonic()
@@ -340,8 +347,12 @@ class DownloadTilesTask:
         self, bcol: int, brow: int, trapeze_name: str,
         min_x: int, max_x: int, min_y: int, max_y: int, z: int = 17,
     ) -> Dict[str, int]:
-        """Один блок фазы A. Возвращает счётчики requested/fetched/saved/rejected/from_pool."""
-        stats = {"requested": 0, "fetched": 0, "saved": 0, "rejected": 0, "from_pool": 0}
+        """Один блок фазы A. Возвращает счётчики
+        requested/fetched/saved/rejected/from_pool/already_on_disk."""
+        stats = {
+            "requested": 0, "fetched": 0, "saved": 0, "rejected": 0,
+            "from_pool": 0, "already_on_disk": 0,
+        }
         if self._stop.is_set() or self._export_disabled.is_set() or self._session_limit_reached():
             return stats
 
@@ -354,6 +365,7 @@ class DownloadTilesTask:
             for x in range(max(base_x, min_x), min(base_x + block_tiles, max_x + 1))
         ]
         if needed and all(self._tile_exists(trapeze_name, z, x, y) for x, y in needed):
+            stats["already_on_disk"] = len(needed)
             return stats  # весь нужный кусок блока уже на диске — не запрашиваем
 
         if use_pool:
@@ -362,6 +374,7 @@ class DownloadTilesTask:
                     stats["from_pool"] += 1
             still_needed = [(x, y) for x, y in needed if not self._tile_exists(trapeze_name, z, x, y)]
             if not still_needed:
+                stats["already_on_disk"] = len(needed) - stats["from_pool"]
                 return stats  # весь нужный кусок нашёлся в пуле — сети не касаемся
 
             if self._block_marker_exists(z, bcol, brow):
@@ -548,21 +561,32 @@ class DownloadTilesTask:
 
     def _process_trapeze(self, trapeze_name: str, geojson: str, z: int = 17) -> None:
         min_x, max_x, min_y, max_y = self.calculate_tile_ranges(geojson, z)
+        tile_total = (max_x - min_x + 1) * (max_y - min_y + 1)
         logger.info(f"Лист {trapeze_name}: {max_x - min_x + 1}x{max_y - min_y + 1} тайлов")
 
-        block_stats = {"requested": 0, "fetched": 0, "saved": 0, "rejected": 0, "from_pool": 0}
+        if self.progress is not None:
+            self.progress.start_outer(trapeze_name, total_inner=tile_total)
+
+        block_stats = {
+            "requested": 0, "fetched": 0, "saved": 0, "rejected": 0,
+            "from_pool": 0, "already_on_disk": 0,
+        }
         block_tiles = self.dzz_cfg.block_tiles
 
         if self.dzz_cfg.use_export and not self._export_disabled.is_set():
-            bcol_range = range(min_x // block_tiles, max_x // block_tiles + 1)
-            brow_range = range(min_y // block_tiles, max_y // block_tiles + 1)
+            bcol_list = list(range(min_x // block_tiles, max_x // block_tiles + 1))
+            brow_list = list(range(min_y // block_tiles, max_y // block_tiles + 1))
+            blocks_total = len(bcol_list) * len(brow_list)
+            blocks_done = 0
+            if self.progress is not None:
+                self.progress.set_extra("блоки", f"0/{blocks_total}")
 
             with ThreadPoolExecutor(max_workers=self.block_workers) as executor:
                 futures = [
                     executor.submit(
                         self.process_block, bcol, brow, trapeze_name, min_x, max_x, min_y, max_y, z
                     )
-                    for bcol in bcol_range for brow in brow_range
+                    for bcol in bcol_list for brow in brow_list
                 ]
                 for future in futures:
                     try:
@@ -571,12 +595,18 @@ class DownloadTilesTask:
                         continue
                     for k in block_stats:
                         block_stats[k] += stats[k]
+                    blocks_done += 1
+                    if self.progress is not None:
+                        self.progress.set_extra("блоки", f"{blocks_done}/{blocks_total}")
+                        self.progress.tick(stats["saved"])
+                        self.progress.tick_skipped(stats["from_pool"] + stats["already_on_disk"])
 
         logger.info(
             f"Лист {trapeze_name}: блоков запрошено {block_stats['requested']}, "
             f"получено {block_stats['fetched']}, тайлов сохранено из блоков "
             f"{block_stats['saved']}, отбраковано по качеству {block_stats['rejected']}, "
-            f"взято из пула без сети {block_stats['from_pool']}"
+            f"взято из пула без сети {block_stats['from_pool']}, "
+            f"уже на диске {block_stats['already_on_disk']}"
         )
 
         if self._stop.is_set():
@@ -604,10 +634,18 @@ class DownloadTilesTask:
                     continue
                 if source is None:
                     failed += 1
+                    if self.progress is not None:
+                        self.progress.tick_failed(1)
                 else:
                     source_counts[source] = source_counts.get(source, 0) + 1
+                    if self.progress is not None:
+                        self.progress.tick(1)
 
         logger.info(f"Лист {trapeze_name}: добрано потайлово {source_counts}, не получено {failed}")
+
+        if self.progress is not None:
+            self.progress.add_source_counts(source_counts)
+            self.progress.finish_outer()
 
         if self._stop.is_set():
             return
@@ -619,6 +657,15 @@ class DownloadTilesTask:
         trapezes_df = self.get_trapezes()
         total = len(trapezes_df)
         logger.info(f"Found {total} trapezes for processing")
+
+        session_deadline = None
+        if self.dzz_cfg.session_max_minutes:
+            session_deadline = self._session_start + self.dzz_cfg.session_max_minutes * 60
+        self.progress = ProgressReporter(
+            name="download", total_outer=total, logger=logger,
+            outer_name="лист", inner_name="тайлы", rate_unit="тайл",
+            session_deadline=session_deadline, session_unit_name="лист",
+        )
 
         if self.dzz_cfg.use_export:
             self._probe_export()
@@ -642,6 +689,8 @@ class DownloadTilesTask:
                     "запуск продолжит с этого места (резюмируемость)."
                 )
                 break
+
+        self.progress.finish()
 
         if self._stop.is_set():
             # Уже скачанное на диске (в т.ч. в _pool) не трогаем — резюмируемость
