@@ -173,4 +173,8 @@ def task_classify():
     task.run()
 
 if __name__ == "__main__":
+    # При запуске "python -m src.tasks.X" напрямую (см. docs/deploy-etl.md)
+    # логирование иначе не настроено нигде, кроме pipeline.py — без этого
+    # весь logger.info() (включая ProgressReporter) уходит в никуда.
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     task_classify()

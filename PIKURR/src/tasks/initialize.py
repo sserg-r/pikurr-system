@@ -2,6 +2,7 @@
 from pathlib import Path
 import subprocess
 import os
+import logging
 import pandas as pd
 from src.services.db import DatabaseService
 # from src.core.config import Settings
@@ -98,6 +99,9 @@ class InitializeTask:
         subprocess.run(cmd, env=env, check=True)
 
 if __name__ == "__main__":
+    # См. пояснение в src/tasks/classify.py — без этого вызова
+    # logger.info() при прямом запуске уходит в никуда.
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     # settings = Settings()
     task = InitializeTask()
     task.run()

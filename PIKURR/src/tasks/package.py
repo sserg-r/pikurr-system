@@ -162,4 +162,7 @@ def task_package():
     PackageTask().run()
 
 if __name__ == "__main__":
+    # См. пояснение в src/tasks/classify.py — без этого вызова
+    # logger.info() при прямом запуске уходит в никуда.
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     task_package()

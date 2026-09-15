@@ -182,4 +182,9 @@ def task_segmentate():
     SegmentationTask().run()
 
 if __name__ == "__main__":
+    # При запуске "python -m src.tasks.X" напрямую (docs/deploy-etl.md,
+    # Вариант Б) логирование иначе не настроено нигде, кроме pipeline.py —
+    # без этого весь logger.info() (включая ProgressReporter) уходит в
+    # никуда, и прогресс/ошибки не видны в `docker logs`.
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     task_segmentate()
