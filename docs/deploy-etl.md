@@ -13,7 +13,10 @@ inputs/
   sources/
     razgrafka_SK63.zip   ← сетка трапеций (не меняется)
     agrifields.zip       ← полигоны агрополей (обновляется)
-  models/                ← модели TF Serving
+  models/
+    two/1/                ← исходный SavedModel (путь отката на TF Serving)
+    onnx/two_opset13.onnx ← модель для инференса (ONNX Runtime, раунд 7)
+    models.config          ← нужен только для отката на TF Serving
 
 outputs/
   tiles/                 ← скачанные тайлы (кэш)
@@ -26,7 +29,10 @@ outputs/
   pg_data/               ← данные PostgreSQL
 ```
 
-Контейнеры: `db` (PostGIS), `tf-serving` (GPU-инференс), `etl` (Python-воркер).
+Контейнеры: `db` (PostGIS), `etl` (Python-воркер, инференс на GPU напрямую
+через ONNX Runtime). Сервис `tf-serving` закомментирован в
+`docker-compose.yml` — оставлен только как путь отката (TensorFlow не
+работает на GPU Blackwell, см. «Инференс: ONNX Runtime» ниже).
 
 ---
 
@@ -35,7 +41,7 @@ outputs/
 | Зависимость | Версия |
 |---|---|
 | Docker + Docker Compose v2 | ≥ 24 |
-| NVIDIA GPU + nvidia-container-toolkit | любая |
+| NVIDIA GPU + nvidia-container-toolkit | driver с поддержкой CUDA ≥ 12.9 (проверено на 575.64) |
 | Python | не нужен на хосте |
 | rsync, ssh | для отправки пакетов |
 
@@ -79,15 +85,28 @@ cp agrifields.zip     inputs/sources/
 # Скопировать файлы модели в inputs/models/
 ```
 
-Структура `inputs/models/` для TF Serving:
+Структура `inputs/models/` (раунд 7 — инференс на ONNX Runtime):
 ```
 inputs/models/
   two/
     1/
-      saved_model.pb
-      variables/
-  models.config
-  batching_parameters.txt
+      saved_model.pb      ← исходный SavedModel, НЕ используется в проде,
+      variables/            путь отката на TF Serving — не удалять
+  onnx/
+    two_opset13.onnx      ← модель для ONNX Runtime (используется в проде)
+  models.config            ← нужен только для отката на TF Serving
+  batching_parameters.txt  ← нужен только для отката на TF Serving
+```
+
+Как получить `two_opset13.onnx` из `SavedModel`, если его ещё нет или
+модель обновилась — одноразовым контейнером (TensorFlow не нужен в проде,
+только для самой конвертации):
+```bash
+docker run --rm -v <HOST_MODEL_DIR>:/models python:3.11-slim bash -c "
+  pip install -q tensorflow-cpu==2.19.0 tf2onnx &&
+  python -m tf2onnx.convert --saved-model /models/two/1 \
+    --output /models/onnx/two_opset13.onnx --opset 13
+"
 ```
 
 ### 4. Собрать Docker-образы
@@ -105,7 +124,7 @@ docker compose build etl
 ### Вариант A: Дашборд (рекомендуется)
 
 ```bash
-docker compose up -d db tf-serving
+docker compose up -d db
 docker compose up etl          # запускает Streamlit на порту 8505
 ```
 
@@ -155,6 +174,84 @@ docker compose run --rm etl python -m src.tasks.<task>
    rsync -avz outputs/dist/pikurr_update_*.zip <SERVER_USER>@<SERVER_IP>:~/repikurr/inbox/
    ```
 5. Watchdog на сервере подхватит пакет автоматически
+
+---
+
+## Инференс: ONNX Runtime (раунд 7, сентябрь 2026)
+
+TensorFlow не поддерживает GPU архитектуры Blackwell (RTX 50xx, `sm_120`) —
+ни pip-пакеты, ни образы `tensorflow/serving` вплоть до 2.20/2.21 не имеют
+готовых кернелов под эту архитектуру и падают с `CUDA_ERROR_INVALID_HANDLE`
+/ `CUDA_ERROR_INVALID_PTX` при JIT-компиляции из PTX. Подтверждённый
+апстрим-баг: [tensorflow/tensorflow#99592](https://github.com/tensorflow/tensorflow/issues/99592).
+Инференс переведён на **ONNX Runtime** (`onnxruntime-gpu`,
+`CUDAExecutionProvider`) — работает на этой архитектуре без ограничений
+(проверено практически, см. `project_pikurr_status.md`).
+
+Что изменилось:
+- `src/services/inference.py` — `onnxruntime.InferenceSession` вместо
+  `ovmsclient`/gRPC к `tf-serving`. Публичный интерфейс (`predict_batch`)
+  не менялся.
+- Сервис `etl` получил резервирование GPU-устройства и монтирует
+  `${HOST_MODEL_DIR}` (том с `.onnx` и исходными SavedModel) — инференс
+  идёт прямо в контейнере `etl`, отдельный сервис `tf-serving` больше не
+  нужен в проде.
+- Базовый образ `etl` — `nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04`
+  вместо `python:3.10-slim`: `onnxruntime-gpu` (версия закреплена в
+  `requirements.txt` — `onnxruntime-gpu==1.26.0`, последняя сборка под
+  CUDA 12.x, начиная с 1.27 требуют уже CUDA 13) нужен полноценный CUDA
+  toolkit + cuDNN (одних pip-экстр `onnxruntime-gpu[cuda,cudnn]`
+  недостаточно — нет cuBLAS) и Python ≥3.11 (нет колёс под 3.10 начиная с
+  `onnxruntime-gpu` 1.24). Зависимости ставятся в `/opt/venv`, а не в
+  системный python — apt-пакет `python3-numpy` (тянется через
+  `libgdal-dev`) конфликтует с pip-версией numpy при установке в
+  системный интерпретатор.
+- Численная эквивалентность с прежним TF Serving проверена дважды:
+  на 80 реальных тайлах (сырые выходы модели) — 0.03% пикселей с
+  изменившимся классом; на полном прогоне одного реального листа
+  (`N-35-10-В-а-3`, 672 тайла, после merge/color-correction) — 0.079%
+  (34923 из 44 040 192 пикселей), без систематического сдвига между
+  классами в матрице переходов (все внедиагональные значения — доли
+  процента от диагонали). Оба раза — пограничные случаи почти равных
+  вероятностей классов, шум порядка операций float32 между CPU/GPU
+  бэкендами, не системная ошибка.
+- Производительность на том же листе: ONNX Runtime + GPU — 46 с,
+  CPU TF Serving — 82 с (~1.8x быстрее; в отдельном изолированном запуске
+  ONNX-часть отрабатывала за 15 с — конкретное время заметно зависит от
+  холодного старта CUDA-контекста и загрузки хоста).
+- Подтверждено, что при отсутствии GPU сервис падает явно: сам ONNX
+  Runtime пытается тихо откатиться на CPU («Falling back to
+  ['CPUExecutionProvider'] and retrying»), но `InferenceService` это
+  перехватывает — если активный провайдер после инициализации не
+  совпадает с `INFERENCE__PROVIDER`, поднимается `RuntimeError`
+  с перечислением доступных провайдеров, обработка не продолжается.
+
+**Переменные `.env`** (раздел `INFERENCE`):
+- `INFERENCE__ONNX_MODEL_PATH` — путь к `.onnx` внутри контейнера
+  (`/models/onnx/two_opset13.onnx`).
+- `INFERENCE__PROVIDER` — `CUDAExecutionProvider`. При старте сервис
+  проверяет, что этот провайдер реально активен; если нет — падает с
+  исключением, а не тихо уходит на CPU.
+- `INFERENCE__MODEL_NAME`, `INFERENCE__BATCH_SIZE` — как раньше.
+- `INFERENCE__HOST` / `INFERENCE__PORT` / `INFERENCE__MODEL_VERSION` —
+  устарели, использовались только TF Serving. Не удалены — часть пути
+  отката.
+
+**Откат на TF Serving**, если понадобится:
+1. Раскомментировать сервис `tf-serving` в `docker-compose.yml`, вернуть
+   `etl.depends_on: tf-serving`.
+2. Вернуть `src/services/inference.py` из
+   `src/services/_archive/inference_ovms_tfserving.py`, `ovmsclient`
+   обратно в `requirements.txt`.
+3. Исходные SavedModel никуда не удалялись — лежат в `inputs/models/two/1`.
+
+**Известное ограничение**: индикатор в дашборде (`dashboard.py`) проверяет
+только наличие файла `.onnx` и то, что `CUDAExecutionProvider` в принципе
+скомпилирован в `onnxruntime` (`ort.get_available_providers()`) — это не
+гарантирует, что CUDA-инициализация реально пройдёт при следующем инференсе
+(как было с TF: провайдер формально доступен, а `cuLaunchKernel` падает).
+Полноценная проверка требует создания `InferenceSession`, что дорого
+делать на каждой перерисовке страницы — сознательный компромисс.
 
 ---
 

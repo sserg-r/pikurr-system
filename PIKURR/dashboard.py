@@ -59,8 +59,24 @@ with st.sidebar:
     
     # --- Инфо о сервисах ---
     st.markdown("**🔌 Сервисы:**")
-    # TF Serving (просто выводим конфиг, пинговать gRPC сложно из streamlit без клиента)
-    st.info(f"✅ **TF Serving (GPU)**")
+
+    # --- Инференс (ONNX Runtime, раунд 7 — заменил TF Serving) ---
+    import os
+    import onnxruntime as ort
+
+    onnx_path = settings.inference.onnx_model_path
+    available_providers = ort.get_available_providers()
+    wanted_provider = settings.inference.provider
+
+    if not os.path.exists(onnx_path):
+        st.error(f"❌ **Inference (ONNX):** модель не найдена\n`{onnx_path}`")
+    elif wanted_provider not in available_providers:
+        st.error(
+            f"❌ **Inference (ONNX):** провайдер `{wanted_provider}` недоступен\n"
+            f"Доступны: {available_providers}"
+        )
+    else:
+        st.success(f"✅ **Inference (ONNX Runtime, {wanted_provider})**")
     
     # GEE
     project = settings.gee.project

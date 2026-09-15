@@ -1,54 +1,48 @@
 import numpy as np
-import ovmsclient
+import onnxruntime as ort
 from src.core.config import settings
-from tqdm import tqdm
+
 
 class InferenceService:
     def __init__(self, inference_settings=None):
         self.settings = inference_settings or settings.inference
-        
-        address = f"{self.settings.host}:{self.settings.port}"
-        print(f"[InferenceService] Connecting to: {address} ...") # <--- Отладка
-        
-        self.client = ovmsclient.make_grpc_client(address)
-        
-        # Добавляем timeout=10, так как это помогло в debug-скрипте
-        print(f"[InferenceService] Loading metadata for model: {self.settings.model_name}...")
-        try:
-            self.model_metadata = self.client.get_model_metadata(
-                model_name=self.settings.model_name,
-                model_version=self.settings.model_version,
-                timeout=10 
+
+        sess_options = ort.SessionOptions()
+        if self.settings.intra_op_num_threads:
+            sess_options.intra_op_num_threads = self.settings.intra_op_num_threads
+        if self.settings.inter_op_num_threads:
+            sess_options.inter_op_num_threads = self.settings.inter_op_num_threads
+
+        print(f"[InferenceService] Loading ONNX model: {self.settings.onnx_model_path} ...")
+        self.session = ort.InferenceSession(
+            self.settings.onnx_model_path,
+            sess_options=sess_options,
+            providers=[self.settings.provider, "CPUExecutionProvider"],
+        )
+
+        active_providers = self.session.get_providers()
+        print(f"[InferenceService] Active providers: {active_providers}")
+        if active_providers[0] != self.settings.provider:
+            # Тихий откат на CPU — тот самый класс отказа, который закрывали
+            # в предыдущих раундах (см. project_pikurr_status.md, инцидент
+            # CUDA_ERROR_INVALID_HANDLE): лучше упасть сразу и явно, чем
+            # молча уйти в многократно более медленный CPU-путь.
+            raise RuntimeError(
+                f"[InferenceService] Требуемый провайдер '{self.settings.provider}' "
+                f"не активен (получили {active_providers}). "
+                f"Доступные провайдеры: {ort.get_available_providers()}."
             )
-            print("[InferenceService] Metadata loaded successfully.")
-        except Exception as e:
-            print(f"[InferenceService] ERROR: Could not load metadata from {address}")
-            raise e
-            
-        self.input_name = next(iter(self.model_metadata["inputs"]))
+
+        self.input_name = self.session.get_inputs()[0].name
 
     def predict_batch(self, images: np.ndarray) -> np.ndarray:
-        predictions = []
-        # Если изображений нет или размер батча 0 - защита от деления на ноль
         if len(images) == 0:
             return np.array([])
-            
-        total_batches = (len(images) + self.settings.batch_size - 1) // self.settings.batch_size
-        
-        # Убираем tqdm, если батчей мало, чтобы не засорять логи, или оставляем
-        iterator = range(0, len(images), self.settings.batch_size)
-        if total_batches > 1:
-            iterator = tqdm(iterator, desc="Inferencing", total=total_batches, leave=False)
 
-        for i in iterator:
-            batch = images[i:i+self.settings.batch_size].astype(np.float32)
-            inputs = {self.input_name: batch}
-            result = self.client.predict(
-                inputs=inputs,
-                model_name=self.settings.model_name,
-                model_version=self.settings.model_version,
-                timeout=30 # Таймаут на само предсказание (может быть долгим)
-            )
-            predictions.append(result)
+        predictions = []
+        for i in range(0, len(images), self.settings.batch_size):
+            batch = images[i:i + self.settings.batch_size].astype(np.float32)
+            outputs = self.session.run(None, {self.input_name: batch})
+            predictions.append(outputs[0])
 
         return np.vstack(predictions)

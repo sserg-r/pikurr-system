@@ -169,11 +169,21 @@ class PathConfig(BaseModel):
 
 
 class InferenceSettings(BaseModel):
-    host: str #= "192.168.251.190"
-    port: int #= 8500
+    # УСТАРЕЛО (раунд 7, prompts/PROMPT_onnx_inference_round7.md): адрес
+    # TF Serving/ovmsclient. Инференс переведён на ONNX Runtime, эти поля
+    # не используются. Не удалены, чтобы .env оставался путём отката на
+    # src/services/_archive/inference_ovms_tfserving.py + сервис tf-serving.
+    host: str | None = None
+    port: int | None = None
+    model_version: int | None = None
+
     model_name: str #= "two"
-    model_version: int #= 1
     batch_size: int #= 8
+
+    onnx_model_path: str
+    provider: str = "CUDAExecutionProvider"
+    intra_op_num_threads: int | None = None
+    inter_op_num_threads: int | None = None
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
