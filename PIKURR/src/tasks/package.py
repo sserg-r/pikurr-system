@@ -89,6 +89,36 @@ class PackageTask:
                     years.append(int(d.name))
         return years
 
+    def check_missing_sheets(self, years: list[int]) -> None:
+        """Сверяет TIF-файлы каждого упаковываемого года со списком листов
+        проекта и пишет ERROR по отсутствующим — раньше лист, не попавший в
+        сборку (например, упавший при склейке, раунд 12 п.4), молча не
+        включался в пакет без единого предупреждения.
+
+        ТЗ раунда 13 называет источником списка `razgrafka`, но это
+        общенациональная сетка 1:10000 (21280 листов на всю Беларусь) — сверка
+        с ней даёт ~20000 «отсутствующих» на каждый прогон, что не сигнал, а
+        шум. Реальный список листов проекта — `trapeze_serv` (912 строк), тот
+        же источник, что уже использует `SegmentationTask.get_trap_list()`
+        (`settings.dbtables.trap`) для отбора листов на сегментацию. Использую
+        его — иначе проверка бесполезна."""
+        try:
+            df = self.db.execute_query(f"SELECT name FROM {settings.dbtables.trap}")
+            all_sheets = set(df["name"].tolist())
+        except Exception as e:
+            logger.error(f"Не удалось получить список листов {settings.dbtables.trap} для проверки полноты пакета: {e}")
+            return
+
+        for year in years:
+            year_dir = self.public_rasters_dir / str(year)
+            present = {p.stem for p in year_dir.glob("*.tif")} | {p.stem for p in year_dir.glob("*.TIF")}
+            missing = sorted(all_sheets - present)
+            if missing:
+                logger.error(
+                    f"Пакет {year}: {len(missing)} листов из razgrafka отсутствуют "
+                    f"среди TIF в {year_dir} и не попадут в поставку: {missing}"
+                )
+
     def create_manifest(self, years: list[int]):
         """Создает файл описания пакета"""
         latest_year = max(years) if years else self.get_target_year()
@@ -106,6 +136,8 @@ class PackageTask:
         raster_years = self.collect_raster_years()
         if not raster_years:
             logger.warning("Не найдено ни одной папки с TIF-файлами. Растры в пакет не войдут.")
+        else:
+            self.check_missing_sheets(raster_years)
         latest_year = max(raster_years) if raster_years else self.get_target_year()
 
         date_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
