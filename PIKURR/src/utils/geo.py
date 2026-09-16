@@ -37,6 +37,21 @@ def getTileIndex(lat: float, lon: float, zoomLevel: int) -> Tuple[int, int, int,
 
     return x, y, xpx, ypx
 
+def get_tile_range_for_bbox(
+    min_lon: float, min_lat: float, max_lon: float, max_lat: float, z: int = 17
+) -> Tuple[int, int, int, int]:
+    """
+    Диапазон индексов тайлов (min_x, max_x, min_y, max_y), покрывающий
+    географический bbox (например, истинную границу листа из геометрии
+    `razgrafka`) — в отличие от `get_bbox_for_tileset`, которая работает в
+    обратную сторону (от тайлов к bbox) и опирается на то, что физически
+    есть на диске. Y растёт с юга на север в индексах тайлов наоборот —
+    северная широта (max_lat) даёт наименьший y (верхний ряд).
+    """
+    min_x, min_y, _, _ = getTileIndex(max_lat, min_lon, z)
+    max_x, max_y, _, _ = getTileIndex(min_lat, max_lon, z)
+    return min_x, max_x, min_y, max_y
+
 def tileZXYToLatLonBBox(zoomLevel: int, x: int, y: int) -> Dict[str, Any]:
     """
     Преобразование индексов тайла в географические координаты bbox

@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 import numpy as np
@@ -8,7 +9,7 @@ from src.services.db import DatabaseService
 from src.services.inference import InferenceService
 from src.core.config import settings
 from src.utils.image import merge_tiles, split_image, merge_imageset
-from src.utils.geo import get_bbox_for_tileset
+from src.utils.geo import get_bbox_for_tileset, get_tile_range_for_bbox
 from src.utils.progress import ProgressReporter
 
 logger = logging.getLogger(__name__)
@@ -66,10 +67,54 @@ class SegmentationTask:
         
         return np.asarray(assembled_pil)
 
+    def get_sheet_tile_range(self, trap_name: str, z: int = 17) -> tuple[int, int, int, int] | None:
+        """Истинный диапазон тайлов листа (min_x, max_x, min_y, max_y) из
+        геометрии `razgrafka` — не зависит от того, что физически докачано.
+        Закрывает регрессию раунда 13 (задача 2, раунд 14): там канвас
+        собирался только по bbox присутствующих файлов, и лист вроде
+        `O-35-142-В-б-3` (398/672 тайлов отсутствуют за пределами этого
+        bbox, не внутри) получал канвас меньше истинного размера — без
+        пометки, что почти 60% площади вообще отсутствует. None, если
+        геометрия не нашлась (вызывающий код откатывается на старое
+        поведение — вывод диапазона из присутствующих файлов)."""
+        query = (
+            "SELECT ST_XMin(geom) AS min_lon, ST_YMin(geom) AS min_lat, "
+            "ST_XMax(geom) AS max_lon, ST_YMax(geom) AS max_lat "
+            "FROM razgrafka WHERE n10000 = %(name)s"
+        )
+        try:
+            df = self.db.execute_query(query, params={"name": trap_name})
+            if df.empty:
+                logger.error(f"{trap_name}: не найден в razgrafka, диапазон тайлов не определён")
+                return None
+            row = df.iloc[0]
+            return get_tile_range_for_bbox(
+                float(row["min_lon"]), float(row["min_lat"]),
+                float(row["max_lon"]), float(row["max_lat"]), z=z,
+            )
+        except Exception as e:
+            logger.error(f"{trap_name}: не удалось получить границу из razgrafka: {e}")
+            return None
+
     def process_trapeze(self, tile_dir: Path, output_path: Path):
-        canvas_pil = merge_tiles(str(tile_dir))
+        tile_range = self.get_sheet_tile_range(tile_dir.name)
+        gaps_path = tile_dir.parent / f"{tile_dir.name}_gaps.json"
+        canvas_pil = merge_tiles(str(tile_dir), gaps_out_path=gaps_path, tile_range=tile_range)
         if canvas_pil is None:
             return
+
+        if gaps_path.exists():
+            try:
+                with open(gaps_path, encoding="utf-8") as f:
+                    gaps_info = json.load(f)
+                logger.warning(
+                    f"{tile_dir.name}: {gaps_info['missing_count']} недостающих тайлов "
+                    f"из {gaps_info['expected_tiles']} "
+                    f"({100 * gaps_info['missing_fraction']:.2f}% плейсхолдер-пикселей) — "
+                    f"см. {gaps_path.name}"
+                )
+            except (OSError, json.JSONDecodeError, KeyError) as e:
+                logger.error(f"Не удалось прочитать {gaps_path} для лога: {e}")
 
         # Оригинал (Scale 1.0)
         canvas_full = np.asarray(canvas_pil)
@@ -129,12 +174,18 @@ class SegmentationTask:
         # final_mask[mask_is_other_high & is_water_blue & ~is_green] = self.CLS_OTHER
         final_mask[mask_is_other_high & ~is_green] = self.CLS_OTHER
 
-        self.save_as_geotiff(final_mask, tile_dir, output_path)
+        self.save_as_geotiff(final_mask, tile_dir, output_path, tile_range=tile_range)
 
-    def save_as_geotiff(self, image: np.ndarray, tile_dir: Path, output_path: Path):
-        tile_paths = [str(p) for p in tile_dir.glob('*.*')]
+    def save_as_geotiff(self, image: np.ndarray, tile_dir: Path, output_path: Path, tile_range=None):
         try:
-            bbox = get_bbox_for_tileset(tile_paths, z=17)
+            if tile_range is not None:
+                min_x, max_x, min_y, max_y = tile_range
+                # синтетические "имена тайлов" — get_bbox_for_tileset нужен только
+                # их разбор z_x_y, на диске эти файлы существовать не обязаны.
+                bbox = get_bbox_for_tileset([f"17_{min_x}_{min_y}", f"17_{max_x}_{max_y}"], z=17)
+            else:
+                tile_paths = [str(p) for p in tile_dir.glob('*.*')]
+                bbox = get_bbox_for_tileset(tile_paths, z=17)
             transform = rasterio.transform.from_bounds(
                 west=bbox['west'], south=bbox['south'], 
                 east=bbox['east'], north=bbox['north'],
