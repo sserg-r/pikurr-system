@@ -2,13 +2,17 @@
 Модуль обработки изображений: нарезка, склейка, работа с тайлами.
 Восстановлена оригинальная логика PIKURR для сохранения геопривязки.
 """
+import json
+import logging
 import math
 import re
 import numpy as np
 from PIL import Image
 from glob import glob
 from pathlib import Path
-from typing import Tuple, Dict, Union, List
+from typing import Optional, Tuple, Dict, Union, List
+
+logger = logging.getLogger(__name__)
 
 # Имя тайла: {z}_{x}_{y}, расширение — из белого списка. Сетка в merge_tiles
 # выводится из количества файлов, поэтому посторонний файл в папке листа
@@ -124,9 +128,38 @@ def merge_imageset(images: np.ndarray, assembly_pattern: Tuple[int, int],
     return canvas
 
 
-def merge_tiles(tile_path: Union[str, Path]) -> Union[Image.Image, None]:
+def merge_tiles(
+    tile_path: Union[str, Path],
+    gaps_out_path: Union[str, Path, None] = None,
+    tile_range: Optional[Tuple[int, int, int, int]] = None,
+) -> Union[Image.Image, None]:
     """
     Склейка тайлов из папки.
+
+    Сетка сборки (число строк/столбцов) строится по **ожидаемому диапазону
+    координат**, а не подсчётом числа файлов — раньше `rows_count =
+    len(x_indices)` и `lines_count = len(pathes) // rows_count` выводились из
+    того, что есть на диске, поэтому единичный пропавший тайл ломал
+    целочисленное деление (`ValueError` при `reshape`), а пропажа целого
+    X-столбца тихо съезжала сетку без единой ошибки (раунд 12, задача 4;
+    раунд 13, задача 3). Недостающие ячейки заполняются чёрным плейсхолдером
+    на своих истинных координатах, поэтому все последующие тайлы не
+    сдвигаются. Математика самой склейки (`merge_imageset`) не менялась —
+    здесь меняется только то, что в неё передаётся.
+
+    `tile_range`, если задан, — `(min_x, max_x, min_y, max_y)` **истинной**
+    границы листа (например, из геометрии `razgrafka`, а не из bbox
+    присутствующих файлов). Без него диапазон по-прежнему выводится из
+    присутствующих файлов — это оставляет прежнюю (раунд 13) уязвимость: если
+    у листа отсутствуют тайлы **за пределами** bbox присутствующих файлов
+    (не пропуск внутри, а целый неохваченный край — пример `O-35-142-В-б-3`,
+    раунд 13/14), канвас соберётся только по видимой площади. Явный
+    `tile_range` устраняет это полностью — регрессия раунда 13/14, задача 2.
+
+    `gaps_out_path`, если задан, — куда написать `<лист>_gaps.json` со
+    списком недостающих координат (по аналогии с `_missing.json` раунда 2,
+    рядом с папкой листа, а не внутри неё). Файл пишется только если пропуски
+    реально есть.
     """
     path_str = str(tile_path)
     pathes = [
@@ -136,51 +169,79 @@ def merge_tiles(tile_path: Union[str, Path]) -> Union[Image.Image, None]:
     if not pathes:
         return None
 
-    # Оригинальная сортировка: x.split('_')[-1]+x.split('_')[-2]
-    # Это сортировка строк. Чтобы избежать проблем с '10' < '2', лучше парсить в int.
-    # Но сохраняем принцип: Сначала Y ([-1]), потом X ([-2]).
-    def sort_key(x):
-        stem = Path(x).stem # z_x_y
-        parts = stem.split('_')
-        if len(parts) >= 3:
-            return int(parts[2]), int(parts[1]) # Y, X
-        return 0, 0
-
-    pathes.sort(key=sort_key)
-    
-    ima = []
+    # Индекс присутствующих тайлов по (x, y); z берём общий (в норме один на лист).
+    present: Dict[Tuple[int, int], str] = {}
+    z_val = None
     for p in pathes:
+        stem = Path(p).stem  # z_x_y
+        z_s, x_s, y_s = stem.split('_')
+        z_i, x_i, y_i = int(z_s), int(x_s), int(y_s)
+        present[(x_i, y_i)] = p
+        z_val = z_i
+
+    if tile_range is not None:
+        min_x, max_x, min_y, max_y = tile_range
+    else:
+        xs = [c[0] for c in present]
+        ys = [c[1] for c in present]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+    cols = max_x - min_x + 1  # ожидаемое число X-столбцов
+    rows = max_y - min_y + 1  # ожидаемое число Y-строк
+
+    # Размер и число каналов тайла - по первому реально читаемому файлу.
+    tile_hw = None
+    channels = 1
+    for p in present.values():
         try:
             with Image.open(p) as im:
                 arr = np.asarray(im)
-                if arr.ndim == 3 and arr.shape[2] >= 3:
-                    ima.append(arr[:,:,:3])
-                else:
-                    ima.append(arr)
-        except:
+        except Exception:
             continue
-
-    if not ima:
+        tile_hw = arr.shape[:2]
+        channels = arr.shape[2] if arr.ndim == 3 else 1
+        break
+    if tile_hw is None:
         return None
 
-    # Вычисление сетки
-    # rows=len(set([p.split('_')[-2] for p in pathes])) -> Это подсчет уникальных X ?
-    # Нет, [-2] это X в имени z_x_y. 
-    # В оригинале: rows = len(set(X_indices)).
-    # lines = total / rows. 
-    # assembly_pattern передавался как (lines, rows). 
-    # Значит (Количество Y, Количество X).
-    
-    x_indices = set()
-    for p in pathes:
-        parts = Path(p).stem.split('_')
-        if len(parts) >= 2:
-            x_indices.add(parts[1]) # X index
-            
-    rows_count = len(x_indices) # Это количество столбцов (Columns)
-    if rows_count == 0: return None
-    
-    lines_count = len(pathes) // rows_count # Это количество строк (Rows)
-    
-    # В оригинале вызов: merge_imageset(..., (lines, rows), 0, 0)
-    return merge_imageset(np.array(ima), (lines_count, rows_count), 0, margin=0)
+    placeholder = (
+        np.zeros((*tile_hw, channels), dtype=np.uint8) if channels > 1
+        else np.zeros(tile_hw, dtype=np.uint8)
+    )
+
+    # Порядок как раньше: Y снаружи, X внутри (merge_imageset ждёт плоский
+    # массив в порядке reshape((rows, cols, *imsize))).
+    ima = []
+    gaps = []
+    for y in range(min_y, max_y + 1):
+        for x in range(min_x, max_x + 1):
+            p = present.get((x, y))
+            if p is None:
+                ima.append(placeholder)
+                gaps.append({"z": z_val, "x": x, "y": y, "reason": "no_tile_file"})
+                continue
+            try:
+                with Image.open(p) as im:
+                    arr = np.asarray(im)
+                    if arr.ndim == 3 and arr.shape[2] >= 3:
+                        arr = arr[:, :, :3]
+            except Exception:
+                arr = placeholder
+                gaps.append({"z": z_val, "x": x, "y": y, "reason": "unreadable_tile_file"})
+            ima.append(arr)
+
+    if gaps and gaps_out_path is not None:
+        expected = rows * cols
+        payload = {
+            "z": z_val, "min_x": min_x, "max_x": max_x, "min_y": min_y, "max_y": max_y,
+            "expected_tiles": expected, "missing_count": len(gaps),
+            "missing_fraction": round(len(gaps) / expected, 4) if expected else 0.0,
+            "missing": gaps,
+        }
+        try:
+            with open(gaps_out_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=1)
+        except OSError as e:
+            logger.error(f"Не удалось записать {gaps_out_path}: {e}")
+
+    return merge_imageset(np.array(ima), (rows, cols), 0, margin=0)
