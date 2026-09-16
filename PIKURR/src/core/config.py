@@ -60,6 +60,11 @@ class DZZSettings(BaseModel):
     # Failed to execute query, Unable to complete operation) — считаются
     # только отказы на различающихся координатах подряд. См. round5, п.2.
     export_failure_threshold: int = 5
+    # Список поражённых дымкой листов (раунд 16) — для них фаза A (geodzz
+    # exportImage) и пул полностью отключаются, водопад фазы B начинается
+    # прямо с Esri. Отсутствие файла — не ошибка, список пуст, поведение
+    # прежнее для всех листов.
+    affected_sheets: str = "outputs/affected_sheets.json"
 
 class ProgressSettings(BaseModel):
     """Индикация прогресса длительных задач. См. prompts/PROMPT_progress_round6.md."""

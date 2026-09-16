@@ -102,6 +102,47 @@ class DownloadTilesTask:
         # листов; None при вызове process_block/process_tile напрямую (тесты).
         self.progress: Optional[ProgressReporter] = None
 
+        # --- Поражённые дымкой листы (раунд 16) ---
+        self._affected_sheets: set = self._load_affected_sheets()
+
+    def _resolve_affected_sheets_path(self) -> Path:
+        """`outputs/...` в конфиге — конвенция проекта для host-имени
+        каталога, который в контейнере смонтирован как `data_output`
+        (см. docs/deploy-etl.md — все примеры путей написаны как
+        `outputs/...`). Абсолютный путь в `DZZ__AFFECTED_SHEETS`
+        используется как есть."""
+        raw = Path(self.dzz_cfg.affected_sheets)
+        if raw.is_absolute():
+            return raw
+        parts = raw.parts
+        if parts and parts[0] == "outputs":
+            raw = Path(*parts[1:]) if len(parts) > 1 else Path()
+        return self.config.paths.data_output / raw
+
+    def _load_affected_sheets(self) -> set:
+        """Список листов, переводимых на Esri/Google (раунд 16, задача 1).
+        Отсутствие файла — не ошибка: список пуст, поведение для всех
+        листов прежнее (см. DZZ__AFFECTED_SHEETS)."""
+        path = self._resolve_affected_sheets_path()
+        if not path.exists():
+            return set()
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.error(f"Не удалось прочитать {path} (affected_sheets): {e}. Список поражённых листов пуст.")
+            return set()
+        # Формат — {"<лист>": {...}, ...} (раунд 16, задача 1) или просто список имён.
+        if isinstance(data, dict):
+            sheets = set(data.keys())
+        elif isinstance(data, list):
+            sheets = set(data)
+        else:
+            logger.error(f"{path}: неожиданный формат (ожидался dict или list), список поражённых листов пуст.")
+            return set()
+        logger.info(f"Загружен список поражённых листов ({len(sheets)}) из {path} — для них geodzz исключён из водопада.")
+        return sheets
+
     def get_session(self) -> requests.Session:
         """Сессия requests, своя для потока. Host/Referer больше не подменяются
         на уровне сессии (баг: Host: gismap.by уходил на все хосты, включая
@@ -437,28 +478,40 @@ class DownloadTilesTask:
 
     # ---------- Фаза B: потайловый водопад ----------
 
-    def process_tile(self, x: int, y: int, z: int, trapeze_name: str) -> Optional[str]:
+    def process_tile(self, x: int, y: int, z: int, trapeze_name: str, esri_only: bool = False) -> Optional[str]:
         """Водопад для одного тайла. Возвращает имя источника, откуда сохранён
-        тайл, либо None, если тайл не добыт ни с одного."""
+        тайл, либо None, если тайл не добыт ни с одного.
+
+        `esri_only=True` (раунд 16) — лист из `affected_sheets.json`: уровни
+        geodzz-export и geodzz-кэш исключены целиком, водопад — только
+        Esri -> Google. Пул тайлов сюда не относится вовсе — обращение к нему
+        происходит только в фазе A (`process_block`), которая для таких листов
+        не запускается (см. `_process_trapeze`)."""
         if self._tile_exists(trapeze_name, z, x, y) or self._stop.is_set() or self._session_limit_reached():
             return None
 
         session = self.get_session()
 
-        dzz_cache = ("dzz-tile", lambda: self._fetch_dzz_tile_cache(session, x, y, z))
-        # USE_EXPORT=false или предохранитель, сработавший до конца прогона
-        # (round5, п.2), исключают уровень exportImage из водопада целиком
-        # (путь отката к прежним трём источникам: dzz-tile -> esri -> google).
-        if self.dzz_cfg.use_export and not self._export_disabled.is_set():
-            dzz_export = ("dzz-export", lambda: self._fetch_dzz_export_tile(session, x, y, z))
-            dzz_sources = [dzz_export, dzz_cache] if self.dzz_cfg.prefer_export else [dzz_cache, dzz_export]
+        if esri_only:
+            sources = [
+                ("esri", lambda: self._fetch_generic_tile(session, "esri", x, y, z)),
+                ("google", lambda: self._fetch_generic_tile(session, "google", x, y, z)),
+            ]
         else:
-            dzz_sources = [dzz_cache]
+            dzz_cache = ("dzz-tile", lambda: self._fetch_dzz_tile_cache(session, x, y, z))
+            # USE_EXPORT=false или предохранитель, сработавший до конца прогона
+            # (round5, п.2), исключают уровень exportImage из водопада целиком
+            # (путь отката к прежним трём источникам: dzz-tile -> esri -> google).
+            if self.dzz_cfg.use_export and not self._export_disabled.is_set():
+                dzz_export = ("dzz-export", lambda: self._fetch_dzz_export_tile(session, x, y, z))
+                dzz_sources = [dzz_export, dzz_cache] if self.dzz_cfg.prefer_export else [dzz_cache, dzz_export]
+            else:
+                dzz_sources = [dzz_cache]
 
-        sources = dzz_sources + [
-            ("esri", lambda: self._fetch_generic_tile(session, "esri", x, y, z)),
-            ("google", lambda: self._fetch_generic_tile(session, "google", x, y, z)),
-        ]
+            sources = dzz_sources + [
+                ("esri", lambda: self._fetch_generic_tile(session, "esri", x, y, z)),
+                ("google", lambda: self._fetch_generic_tile(session, "google", x, y, z)),
+            ]
 
         for name, fetcher in sources:
             try:
@@ -564,6 +617,13 @@ class DownloadTilesTask:
         tile_total = (max_x - min_x + 1) * (max_y - min_y + 1)
         logger.info(f"Лист {trapeze_name}: {max_x - min_x + 1}x{max_y - min_y + 1} тайлов")
 
+        is_affected = trapeze_name in self._affected_sheets
+        if is_affected:
+            logger.info(
+                f"Лист {trapeze_name}: в списке поражённых дымкой (affected_sheets.json, раунд 16) — "
+                "фаза A (geodzz exportImage) и пул отключены целиком; водопад фазы B: Esri -> Google"
+            )
+
         if self.progress is not None:
             self.progress.start_outer(trapeze_name, total_inner=tile_total)
 
@@ -573,7 +633,7 @@ class DownloadTilesTask:
         }
         block_tiles = self.dzz_cfg.block_tiles
 
-        if self.dzz_cfg.use_export and not self._export_disabled.is_set():
+        if not is_affected and self.dzz_cfg.use_export and not self._export_disabled.is_set():
             bcol_list = list(range(min_x // block_tiles, max_x // block_tiles + 1))
             brow_list = list(range(min_y // block_tiles, max_y // block_tiles + 1))
             blocks_total = len(bcol_list) * len(brow_list)
@@ -624,7 +684,7 @@ class DownloadTilesTask:
         failed = 0
         with ThreadPoolExecutor(max_workers=self.tile_workers) as executor:
             futures = [
-                executor.submit(self.process_tile, x, y, z, trapeze_name)
+                executor.submit(self.process_tile, x, y, z, trapeze_name, esri_only=is_affected)
                 for x, y in missing_before_b
             ]
             for future in futures:
