@@ -20,9 +20,25 @@ class PackageTask:
         # Источники
         self.public_rasters_dir = settings.paths.public_root
         self.view_name = "assessment_ready" # Имя View в БД для экспорта
-        
+
         # Цель
         self.dist_dir = settings.paths.dist_dir
+
+        # Та же таблица транслитерации, что ExportTask применяет к именам
+        # листов при публикации в geoserver_public (round16: без неё
+        # check_missing_sheets сравнивал кириллические имена trapeze_serv
+        # с латинскими именами файлов и считал отсутствующими вообще все —
+        # обнаружено вживую на первом реальном полном прогоне после round13).
+        self.trans_tab = str.maketrans({
+            'а':'a', 'б':'b', 'в':'v', 'г':'g', 'д':'d','е':'e',
+            'ж':'j', 'з':'z', 'и':'i', 'к':'k', 'л':'l', 'м':'m',
+            'н':'n', 'о':'o', 'п':'p', 'р':'r', 'с':'s', 'т':'t',
+            'у':'u', 'ф':'f', 'х':'h', 'ц':'c', 'ч':'ch', 'ш':'sh',
+            'А':'A', 'Б':'B', 'В':'V', 'Г':'G', 'Д':'D','Е':'E',
+            'Ж':'J', 'З':'Z', 'И':'I', 'К':'K', 'Л':'L', 'М':'M',
+            'Н':'N', 'О':'O', 'П':'P', 'Р':'R', 'С':'S', 'Т':'T',
+            'У':'U', 'Ф':'F', 'Х':'H', 'Ц':'C', 'Ч':'CH', 'Ш':'SH'
+        })
         
     def get_target_year(self) -> int:
         now = datetime.datetime.now()
@@ -112,10 +128,16 @@ class PackageTask:
         for year in years:
             year_dir = self.public_rasters_dir / str(year)
             present = {p.stem for p in year_dir.glob("*.tif")} | {p.stem for p in year_dir.glob("*.TIF")}
-            missing = sorted(all_sheets - present)
+            # ExportTask публикует файлы под транслитерированным именем
+            # (self.trans_tab здесь — та же таблица) — сверять нужно
+            # транслитерацию, иначе кириллица никогда не совпадёт с латиницей
+            # файлов и «отсутствующими» окажутся все листы разом.
+            translit_to_original = {s.translate(self.trans_tab): s for s in all_sheets}
+            missing_translit = set(translit_to_original) - present
+            missing = sorted(translit_to_original[t] for t in missing_translit)
             if missing:
                 logger.error(
-                    f"Пакет {year}: {len(missing)} листов из razgrafka отсутствуют "
+                    f"Пакет {year}: {len(missing)} листов из {settings.dbtables.trap} отсутствуют "
                     f"среди TIF в {year_dir} и не попадут в поставку: {missing}"
                 )
 
