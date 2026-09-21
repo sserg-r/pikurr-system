@@ -64,6 +64,16 @@ FRONTEND_DB = {
     "name": os.getenv("FRONTEND_DB_NAME", "pikurr"),
 }
 
+# round26, B1: порог допустимой усадки _stage относительно боевой таблицы
+# (доля, 0.10 = 10%). Выбран как «на порядок больше обычной вариации
+# между доставками» (в наблюдавшихся прогонах round25/round26 изменения
+# между доставками — единицы объектов на ~59000, то есть доли процента),
+# но заметно меньше катастрофической потери (пустой или наполовину
+# урезанный слой) — так порог ловит именно битые/неполные пакеты, не
+# нормальные правки полей. Обосновано, не взято произвольно; при
+# необходимости легитимной массовой правки — флаг --allow-shrink.
+DEFAULT_SHRINK_THRESHOLD = 0.10
+
 GEOSERVER_URL = os.getenv("GEOSERVER_URL", "http://localhost:8090/geoserver")
 GEOSERVER_USER = os.getenv("GEOSERVER_USER", "admin")
 GEOSERVER_PASSWORD = _required_env("GEOSERVER_PASSWORD")
@@ -246,7 +256,14 @@ def _ogr2ogr_cmd(pgpassword: str) -> tuple[list[str], bool]:
     )
 
 
-def import_vectors(gpkg_path: Path, *, staged: bool = True):
+class SwapGuardError(RuntimeError):
+    """round26, B1: _stage пуст или меньше боевой таблицы больше порога."""
+    pass
+
+
+def import_vectors(gpkg_path: Path, *, staged: bool = True,
+                    shrink_threshold: float = DEFAULT_SHRINK_THRESHOLD,
+                    allow_shrink: bool = False):
     """Импортирует слои GPKG в PostGIS (agrifields, razgrafka, assessment).
 
     round25, блок B2: по умолчанию (`staged=True`) ogr2ogr пишет во
@@ -341,12 +358,21 @@ def import_vectors(gpkg_path: Path, *, staged: bool = True):
 
     if staged:
         logger.info("Векторные данные импортированы во временные таблицы (_stage).")
-        _swap_staged_tables([layer for layer, _ in layers])
+        _swap_staged_tables(
+            [layer for layer, _ in layers],
+            shrink_threshold=shrink_threshold,
+            allow_shrink=allow_shrink,
+        )
     else:
         logger.info("Векторные данные импортированы (без staging).")
 
 
-def _swap_staged_tables(layers: list[str]):
+_SWAP_ABORT_RE = re.compile(r"SWAP_ABORT\|([^|]+)\|([^|]+)\|stage=(\d+)\|prod=(\d+)")
+
+
+def _swap_staged_tables(layers: list[str], *,
+                         shrink_threshold: float = DEFAULT_SHRINK_THRESHOLD,
+                         allow_shrink: bool = False):
     """Переносит данные из `<layer>_stage` в боевые таблицы одной
     транзакцией (`TRUNCATE` + `INSERT ... SELECT`) и удаляет staging-
     таблицы. round25, блок B2.
@@ -358,9 +384,39 @@ def _swap_staged_tables(layers: list[str]):
     операцию, продолжая отдавать СТАРЫЕ, ещё валидные данные вплоть до
     следующего `REFRESH MATERIALIZED VIEW`. Именно так достигается
     отсутствие окна недоступности WFS/WMS во время доставки.
+
+    round26, B1: битый/усечённый пакет раньше проходил бы этот перенос
+    без единой проверки — TRUNCATE+INSERT отработали бы, REFRESH прошёл
+    бы, статус был бы `ok: true`, а витрина осталась бы с пустыми/
+    урезанными боевыми данными. Перед TRUNCATE каждого слоя, ВНУТРИ той
+    же транзакции, сверяем число строк `_stage` с текущим числом строк
+    боевой таблицы: если `_stage` пуст, или меньше боевой больше чем на
+    `shrink_threshold` — транзакция откатывается целиком (RAISE
+    EXCEPTION внутри BEGIN/COMMIT), боевые таблицы не тронуты.
+    `allow_shrink=True` (флаг `--allow-shrink`) отключает обе проверки —
+    для законного случая, когда данных должно стать меньше.
     """
+    statements = []
+    if not allow_shrink:
+        for layer in layers:
+            statements.append(f"""
+DO $$
+DECLARE
+  stage_count bigint;
+  prod_count bigint;
+BEGIN
+  SELECT count(*) INTO stage_count FROM {layer}_stage;
+  SELECT count(*) INTO prod_count FROM {layer};
+  IF stage_count = 0 THEN
+    RAISE EXCEPTION 'SWAP_ABORT|{layer}|stage_empty|stage=%|prod=%', stage_count, prod_count;
+  ELSIF prod_count > 0 AND stage_count < prod_count * {1 - shrink_threshold} THEN
+    RAISE EXCEPTION 'SWAP_ABORT|{layer}|shrink_over_threshold|stage=%|prod=%', stage_count, prod_count;
+  END IF;
+END $$;
+""".strip())
+
     truncate_list = ", ".join(layers)
-    statements = [f"TRUNCATE {truncate_list};"]
+    statements.append(f"TRUNCATE {truncate_list};")
     for layer in layers:
         statements.append(f"INSERT INTO {layer} SELECT * FROM {layer}_stage;")
     for layer in layers:
@@ -380,6 +436,22 @@ def _swap_staged_tables(layers: list[str]):
     logger.info("Переношу данные из _stage в боевые таблицы (одна транзакция)...")
     result = subprocess.run(cmd, input=sql, env=env, capture_output=True, text=True)
     if result.returncode != 0:
+        abort_match = _SWAP_ABORT_RE.search(result.stderr)
+        if abort_match:
+            layer, reason, stage_n, prod_n = abort_match.groups()
+            reason_ru = {
+                "stage_empty": "_stage пуст",
+                "shrink_over_threshold": f"_stage меньше боевой более чем на "
+                                          f"{shrink_threshold:.0%} (порог)",
+            }.get(reason, reason)
+            message = (
+                f"Перенос из _stage отменён (round26, B1): слой '{layer}' — "
+                f"{reason_ru}. _stage={stage_n} строк, боевая={prod_n} строк. "
+                f"Боевые таблицы НЕ тронуты (транзакция откачена). "
+                f"Если это ожидаемо — перезапустите с --allow-shrink."
+            )
+            logger.error(message)
+            raise SwapGuardError(message)
         logger.error(f"Ошибка переноса из _stage:\n{result.stderr}")
         raise subprocess.CalledProcessError(result.returncode, cmd, result.stderr)
     logger.info("Боевые таблицы обновлены, OID сохранён (без DROP CASCADE).")
@@ -854,7 +926,9 @@ class _StepTracker:
             logger.warning(f"Не удалось записать промежуточный статус: {e}")
 
 
-def deliver(zip_path: Path, tracker: "_StepTracker") -> dict:
+def deliver(zip_path: Path, tracker: "_StepTracker", *,
+            shrink_threshold: float = DEFAULT_SHRINK_THRESHOLD,
+            allow_shrink: bool = False) -> dict:
     with tempfile.TemporaryDirectory(prefix="pikurr_deliver_") as tmpdir:
         tmp = Path(tmpdir)
 
@@ -883,7 +957,8 @@ def deliver(zip_path: Path, tracker: "_StepTracker") -> dict:
         # TRUNCATE+INSERT в боевые вместо DROP CASCADE от ogr2ogr -overwrite,
         # сохраняет OID боевых таблиц и не роняет assessment_ready)
         tracker.step = "import_vectors"
-        import_vectors(tmp / "vectors.gpkg")
+        import_vectors(tmp / "vectors.gpkg", shrink_threshold=shrink_threshold,
+                        allow_shrink=allow_shrink)
 
         # 3б. Ограничение, которое ogr2ogr -overwrite не сохраняет (round19/round20 задача 7)
         tracker.step = "ensure_unique_constraint"
@@ -1077,6 +1152,17 @@ def main():
         "--dry-run", action="store_true",
         help="С --cleanup: только показать, что будет удалено, не удалять",
     )
+    parser.add_argument(
+        "--shrink-threshold", type=float, default=DEFAULT_SHRINK_THRESHOLD,
+        help=(
+            "round26, B1: допустимая доля усадки _stage относительно боевой "
+            f"таблицы перед отказом от переноса (по умолчанию {DEFAULT_SHRINK_THRESHOLD})"
+        ),
+    )
+    parser.add_argument(
+        "--allow-shrink", action="store_true",
+        help="round26, B1: отключить проверку усадки _stage (для законной массовой правки)",
+    )
     args = parser.parse_args()
 
     if args.cleanup:
@@ -1129,7 +1215,8 @@ def main():
 
     healthcheck_result = None
     try:
-        result = deliver(zip_path, tracker)
+        result = deliver(zip_path, tracker, shrink_threshold=args.shrink_threshold,
+                          allow_shrink=args.allow_shrink)
         granules_after = result.get("granules_after")
         refresh_seconds = result.get("refresh_seconds")
         healthcheck_result = result.get("healthcheck")
