@@ -1,0 +1,16 @@
+[Unit]
+Description=PIKURR VPS stack (docker compose up) — поднимает контейнеры при загрузке
+Documentation=https://github.com/sserg-r/PIKURR_REFACTOR
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/sgr/repikurr
+ExecStart=/usr/bin/docker compose -f docker-compose.vps.yml up -d
+ExecStop=/usr/bin/docker compose -f docker-compose.vps.yml stop
+
+[Install]
+WantedBy=multi-user.target

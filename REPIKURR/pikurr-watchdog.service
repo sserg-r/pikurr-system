@@ -9,7 +9,7 @@ Type=simple
 User=user
 WorkingDirectory=/home/user/repikurr
 ExecStart=/usr/bin/python3 /home/user/repikurr/watchdog.py
-Restart=on-failure
+Restart=always
 RestartSec=15
 
 # Логи идут в systemd journal (дублируются watchdog'ом в watchdog.log)
