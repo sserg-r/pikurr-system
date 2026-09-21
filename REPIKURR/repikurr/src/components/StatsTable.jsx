@@ -17,11 +17,17 @@ const COLOR_MAP = {
 export default function StatsTable({ data }) {
   if (!data) return null
   const rows = data?.AggregationResults || []
+  // GeoServer WPS vec:Aggregate возвращает функции в порядке ["Count", "Sum"]
+  // независимо от порядка Sum/Count в самом запросе (getstatsbyuser.xml) —
+  // проверено на живом ответе: ["forest", 679, 1009.7] — 679 полей (Count),
+  // 1009.7 га (Sum). Раньше здесь было наоборот ([, area, fieldCount]),
+  // из-за чего в таблице подписи «Площадь» и «Полей» получали
+  // переставленные значения.
+  let totalArea  = 0
   let totalCount = 0
-  let totalSum   = 0
-  rows.forEach(([, area, fieldCount]) => {
-    totalCount += Number(area)       || 0
-    totalSum   += Number(fieldCount) || 0
+  rows.forEach(([, fieldCount, area]) => {
+    totalCount += Number(fieldCount) || 0
+    totalArea  += Number(area)       || 0
   })
 
   return (
@@ -38,7 +44,7 @@ export default function StatsTable({ data }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map(([val, area, fieldCount]) => (
+          {rows.map(([val, fieldCount, area]) => (
             <tr key={val}>
               <td>
                 <div className="stats-cell-label">
@@ -52,8 +58,8 @@ export default function StatsTable({ data }) {
           ))}
           <tr className="total-row">
             <td>Итого</td>
-            <td className="value-cell">{totalCount.toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</td>
-            <td className="value-cell">{totalSum.toFixed(0)}</td>
+            <td className="value-cell">{totalArea.toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</td>
+            <td className="value-cell">{totalCount.toFixed(0)}</td>
           </tr>
         </tbody>
       </table>

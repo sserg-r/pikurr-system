@@ -10,7 +10,7 @@ export default defineConfig({
       // Режим A: vite dev → проксируем на продакшн GeoServer (read-only, данные 2024)
       // Для режима B (локальный docker-compose) этот блок не используется — там nginx
       '/geoserver': {
-        target: 'http://geobotany.xyz',
+        target: 'https://geobotany.of.by',
         changeOrigin: true,
       },
     },

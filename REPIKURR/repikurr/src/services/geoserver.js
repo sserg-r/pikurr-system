@@ -53,19 +53,20 @@ export async function getBboxByUser(cqlFilter) {
 
 // Loads available years AND district→year mapping in one request.
 // Returns { years: number[], districtsByYear: { [year]: Set<districtId4char> } }
+//
+// round23, задача 1: раньше — WFS-запрос ко ВСЕМ объектам pikurr:fields
+// (тянул геометрию и все поля каждого из 55784+ объектов только чтобы
+// построить выпадающие списки годов/районов, ~12с). Данные между
+// доставками не меняются, поэтому список считает deliver.py один раз на
+// доставку (write_year_district_lookup()) и отдаёт статикой через Caddy —
+// GeoServer в этом запросе больше не участвует (замер: 12с → ~0.5с).
 export async function loadYearDistrictData() {
-  const url = `${WFS_BASE_URL}?service=WFS&version=1.0.0&request=GetFeature&typeName=pikurr:fields&propertyName=year,nr_user&outputFormat=application%2Fjson&maxFeatures=300000`
-  const json = await fetchJSON(url)
+  const json = await fetchJSON('/static/year_district.json')
   const map = {}
-  for (const f of (json.features || [])) {
-    const year = f.properties?.year
-    const nr = f.properties?.nr_user
-    if (!year || !nr) continue
-    const district = String(nr).substring(0, 4)
-    if (!map[year]) map[year] = new Set()
-    map[year].add(district)
+  for (const [year, districts] of Object.entries(json.districtsByYear || {})) {
+    map[year] = new Set(districts)
   }
-  const years = Object.keys(map).map(Number).sort((a, b) => a - b)
+  const years = (json.years || []).slice().sort((a, b) => a - b)
   return { years, districtsByYear: map }
 }
 
