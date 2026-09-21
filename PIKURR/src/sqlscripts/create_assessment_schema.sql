@@ -29,8 +29,18 @@ ALTER TABLE assessment ADD COLUMN IF NOT EXISTS valuation TEXT;
 --   tillage  → class 5
 --   clearing → classes 1, 2, 4 (и всё остальное)
 
-DROP VIEW IF EXISTS assessment_ready_latest;
-DROP VIEW IF EXISTS assessment_ready;
+-- round23, задача 2: assessment_ready был обычным VIEW — пересчитывался на
+-- КАЖДОЕ обращение (7.6с до фиксов round22, 2.3с после них), хотя данные
+-- меняются только при доставке. Мигрируем на MATERIALIZED VIEW: данные
+-- считаются один раз при доставке (CREATE — первый раз; REFRESH — каждую
+-- следующую, из deliver.py, после импорта векторов и до перезагрузки
+-- GeoServer), а не на каждый запрос пользователя.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_views WHERE viewname = 'assessment_ready') THEN
+        DROP VIEW assessment_ready CASCADE;  -- CASCADE снимет и старый assessment_ready_latest
+    END IF;
+END $$;
 
 -- assessment_ready: все годы.
 -- agrifields дедуплицируется через DISTINCT ON (nr_user).
@@ -44,17 +54,28 @@ DROP VIEW IF EXISTS assessment_ready;
 --     ball_co  > 24                 → tillage
 --     иначе                         → meadow
 --   bzdz — категория условий хозяйствования по ndohod_d.
+--
+-- district — первые 4 символа nr_user (код района); нужен как обычная
+-- (материализованная, индексируемая) колонка для round23, задача 1 —
+-- список районов по году теперь строит deliver.py прямым SQL, не GeoServer.
 
-CREATE OR REPLACE VIEW assessment_ready AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS assessment_ready AS
 SELECT
     a.nr_user,
+    LEFT(a.nr_user, 4)                                          AS district,
     a.geom,
     b.year,
     b.description,
     b.stats,
     b.updated_at,
-    -- Площадь поля в гектарах
-    ROUND((ST_Area(a.geom::geography) / 10000)::numeric, 2)  AS area_ha,
+    -- Площадь поля в гектарах — из готового shape_area (исходный файл), а не
+    -- пересчётом ST_Area(geom::geography) на каждый запрос: проверено на всех
+    -- 59209 строках agrifields, средняя относительная погрешность 0.026%
+    -- (1 явно бракованная строка с погрешностью ~100% — не повлияла на
+    -- решение, это дефект исходных данных этого поля, не метода). На VPS с
+    -- более слабым CPU (round22) пересчёт геометрии добавлял ~4.8с на весь
+    -- набор — с готовым полем это исчезает полностью.
+    ROUND((a.shape_area / 10000)::numeric, 2)  AS area_ha,
     a.ball_co                                                  AS ball_co,
     -- Условия хозяйствования (по доходности ndohod_d)
     CASE
@@ -89,7 +110,15 @@ JOIN LATERAL (
                 COALESCE((b.stats::jsonb->>'1')::float, 0) +
                 COALESCE((b.stats::jsonb->>'2')::float, 0)
             ) / NULLIF(
-                (SELECT SUM(t.val::float) FROM jsonb_each_text(b.stats::jsonb) AS t(k, val)),
+                -- Явная сумма 6 известных классов (0=forest,1=bushes,2=bushy,
+                -- 3=meadows,4=other,5=tillage) вместо jsonb_each_text-подзапроса
+                -- (round22): тот вариант делал function-scan НА КАЖДУЮ строку.
+                COALESCE((b.stats::jsonb->>'0')::float, 0) +
+                COALESCE((b.stats::jsonb->>'1')::float, 0) +
+                COALESCE((b.stats::jsonb->>'2')::float, 0) +
+                COALESCE((b.stats::jsonb->>'3')::float, 0) +
+                COALESCE((b.stats::jsonb->>'4')::float, 0) +
+                COALESCE((b.stats::jsonb->>'5')::float, 0),
                 0
             )
         WHEN b.description IS NOT NULL THEN
@@ -102,8 +131,19 @@ JOIN LATERAL (
     END AS frac
 ) fb ON TRUE;
 
+-- Индексы (round23, задача 2): по году, по району, по nr_user+year (уникальный
+-- — держим на будущее, если понадобится REFRESH ... CONCURRENTLY), GIST по
+-- геометрии — для WMS/WFS-фильтрации и пространственных запросов.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_assessment_ready_nr_user_year ON assessment_ready (nr_user, year);
+CREATE INDEX IF NOT EXISTS idx_assessment_ready_year ON assessment_ready (year);
+CREATE INDEX IF NOT EXISTS idx_assessment_ready_district ON assessment_ready (district);
+CREATE INDEX IF NOT EXISTS idx_assessment_ready_geom ON assessment_ready USING GIST (geom);
+
 -- assessment_ready_latest: для каждого поля — только самый свежий год.
 -- Используется слоем fields_latest в GeoServer (режим "Все годы").
+-- Обычный VIEW (не материализованный) — база (assessment_ready) уже
+-- материализована и индексирована, DISTINCT ON по ней быстр сам по себе.
+DROP MATERIALIZED VIEW IF EXISTS assessment_ready_latest;
 CREATE OR REPLACE VIEW assessment_ready_latest AS
 SELECT DISTINCT ON (nr_user) *
 FROM   assessment_ready
