@@ -1,0 +1,111 @@
+version: '3.8'
+
+# Стек для публичного VPS (round21 B2, round22 — замена nginx+certbot на Caddy).
+# server.yml НЕ трогается — остаётся для локального стенда 192.168.251.190.
+#
+# round22, задача 1: фронтальный прокси и TLS — Caddy (см. Caddyfile), не
+# nginx+certbot (тот вариант — docs/legacy/nginx.vps.conf.template, не
+# используется: на прерываемой ВМ certbot требует bootstrap-порядка и
+# cron-продления, окно которого может попасть на период простоя).
+#
+# round22, задача 3: явные лимиты памяти — на 4 ГБ ВМ без них GeoServer (JVM)
+# вытесняет PostGIS. Расчёт распределения — см. docs/deploy-repikurr-vps.md,
+# раздел "Память".
+#
+# Пересчитано после апгрейда ВМ до 6 ГБ RAM (после развёртывания, живая
+# правка): PostGIS упирался в 768m (94% занято, iowait/503 при обычном
+# просмотре карты — I/O-ограничение этой ВМ, больше RAM = больше страничного
+# кэша = меньше обращений к диску). Новые значения — postgis 1536m,
+# geoserver 3g, при общем бюджете ВМ 6 ГБ (React 128m + Caddy 256m + OS/docker
+# оverhead ~0.5-1 ГБ оставляют запас).
+#
+# Не разворачивать до аренды VPS и домена (см. ТЗ round19/21 "Не делать") —
+# round22 арендован фактически (geobotany.of.by, 158.160.237.90), инструкции
+# по развёртыванию — docs/deploy-repikurr-vps.md.
+
+services:
+  postgis:
+    image: postgis/postgis:15-3.3
+    container_name: pikurr_vps_postgis
+    restart: unless-stopped
+    mem_limit: 1536m
+    environment:
+      POSTGRES_DB: pikurr
+      POSTGRES_USER: pikurr
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env}
+    # shared_buffers/work_mem — не по умолчанию (задача 3): дефолт PostgreSQL
+    # (128MB shared_buffers) занижен для этой нагрузки, но полный автотюн под
+    # весь доступный RAM отдал бы память, нужную GeoServer.
+    command: postgres -c shared_buffers=512MB -c work_mem=32MB -c max_connections=50 -c effective_cache_size=1GB
+    volumes:
+      - pgdata_vps:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"  # только loopback — deliver.py на этом же хосте, не интернет
+
+  geoserver:
+    image: kartoza/geoserver:2.24.2
+    container_name: pikurr_vps_geoserver
+    restart: unless-stopped
+    mem_limit: 3g
+    environment:
+      - GEOSERVER_ADMIN_USER=admin
+      - GEOSERVER_ADMIN_PASSWORD=${GEOSERVER_ADMIN_PASSWORD:?Задайте GEOSERVER_ADMIN_PASSWORD в .env}
+      # JVM heap — без этого GeoServer займёт сколько сможет и вытеснит
+      # PostGIS (задача 3). mem_limit=3g учитывает heap + JVM/metaspace overhead
+      # сверху (обычно 300-500MB) + буфер под нативные операции чтения растров
+      # (imageio native cache для мозаики — растёт с числом одновременных
+      # WMS-запросов).
+      - INITIAL_MEMORY=512M
+      - MAXIMUM_MEMORY=2048M
+    volumes:
+      - ./geoserver_data:/opt/geoserver/data_dir
+      - ./data:/mnt/data
+    ports:
+      - "127.0.0.1:8090:8080"  # только loopback — deliver.py на этом же хосте; публично только через Caddy
+
+  react-client:
+    # round22, задача 2: образ собирается ЗАРАНЕЕ вне ВМ (сборка на месте
+    # исчерпает память/время на 2 vCPU/4 ГБ) — docker save/load, тег
+    # repikurr-react:latest. Способ переноса — docs/deploy-repikurr-vps.md,
+    # раздел "Образ React".
+    image: repikurr-react:latest
+    container_name: pikurr_vps_react
+    restart: unless-stopped
+    mem_limit: 128m
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: pikurr_vps_caddy
+    restart: unless-stopped
+    mem_limit: 256m
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:?Задайте DOMAIN в .env}
+      - ACME_EMAIL=${ACME_EMAIL:?Задайте ACME_EMAIL в .env}
+      - GEOSERVER_BASIC_AUTH_USER=${GEOSERVER_BASIC_AUTH_USER:?Задайте GEOSERVER_BASIC_AUTH_USER в .env}
+      - GEOSERVER_BASIC_AUTH_HASH=${GEOSERVER_BASIC_AUTH_HASH:?Задайте GEOSERVER_BASIC_AUTH_HASH в .env (caddy hash-password)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Именованный том — ОБЯЗАТЕЛЕН (round22, задача 1). Тут лежат выданные
+      # сертификаты и ключ ACME-аккаунта. Без него при каждом подъёме ВМ
+      # (прерываемая, останавливается принудительно раз в сутки) Caddy
+      # запрашивал бы сертификат заново — при учащённом вытеснении выест
+      # недельную квоту Let's Encrypt (50 сертификатов/нед на eTLD+1) и сайт
+      # останется без сертификата на неделю.
+      - caddy_data:/data
+      - caddy_config:/config
+      # round23, задача 1: список годов/районов, который deliver.py пишет
+      # после каждой доставки (~/repikurr/static/ на хосте, вне docker) —
+      # bind mount, не именованный том (это не постоянное состояние Caddy,
+      # а файл, который переписывает deliver.py снаружи контейнера).
+      - ./static:/srv/static:ro
+    depends_on:
+      - react-client
+      - geoserver
+
+volumes:
+  pgdata_vps:
+  caddy_data:
+  caddy_config:

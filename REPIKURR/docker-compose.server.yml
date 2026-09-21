@@ -4,12 +4,16 @@ version: '3.8'
 # Отличия от local: порт PostGIS 5435 (5432/5433 заняты), react без прямого порта.
 #
 # Запуск:
-#   cd ~/repikurr && docker compose -f docker-compose.server.yml up -d --build
+#   cd ~/repikurr && cp .env.example .env  # заполнить реальными значениями, один раз
+#   docker compose -f docker-compose.server.yml up -d --build
 #
 # Доступ:
 #   React:      http://192.168.251.190
-#   GeoServer:  http://192.168.251.190/geoserver/web  (admin/geoserver)
-#   PostGIS:    localhost:5435  (pikurr/pikurr/pikurr)
+#   GeoServer:  http://192.168.251.190/geoserver/web  (admin/<GEOSERVER_ADMIN_PASSWORD>)
+#   PostGIS:    localhost:5435  (pikurr/<POSTGRES_PASSWORD>/pikurr)
+#
+# round21, B1: паролей по умолчанию больше нет — без .env (Compose подхватывает
+# его из этого же каталога автоматически) стек не поднимется.
 
 services:
   postgis:
@@ -19,7 +23,7 @@ services:
     environment:
       POSTGRES_DB: pikurr
       POSTGRES_USER: pikurr
-      POSTGRES_PASSWORD: pikurr
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env (см. .env.example)}
     volumes:
       - pgdata_server:/var/lib/postgresql/data
     ports:
@@ -31,7 +35,7 @@ services:
     restart: unless-stopped
     environment:
       - GEOSERVER_ADMIN_USER=admin
-      - GEOSERVER_ADMIN_PASSWORD=geoserver
+      - GEOSERVER_ADMIN_PASSWORD=${GEOSERVER_ADMIN_PASSWORD:?Задайте GEOSERVER_ADMIN_PASSWORD в .env (см. .env.example)}
     ports:
       - "8090:8080"
     volumes:

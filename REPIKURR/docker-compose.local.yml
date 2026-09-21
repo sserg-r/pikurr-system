@@ -8,7 +8,7 @@ version: '3.8'
 # 2. Поднять стек:
 #      docker-compose -f docker-compose.local.yml up -d
 # 3. Открыть: http://localhost
-# 4. GeoServer admin: http://localhost/geoserver/web  (admin/geoserver)
+# 4. GeoServer admin: http://localhost/geoserver/web  (admin/<GEOSERVER_ADMIN_PASSWORD из .env>)
 
 services:
   postgis:
@@ -18,7 +18,7 @@ services:
     environment:
       POSTGRES_DB: pikurr
       POSTGRES_USER: pikurr
-      POSTGRES_PASSWORD: pikurr
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env (локальный, произвольный — не боевой)}
     volumes:
       - pgdata_local:/var/lib/postgresql/data
     ports:
@@ -30,7 +30,7 @@ services:
     restart: unless-stopped
     environment:
       - GEOSERVER_ADMIN_USER=admin
-      - GEOSERVER_ADMIN_PASSWORD=geoserver
+      - GEOSERVER_ADMIN_PASSWORD=${GEOSERVER_ADMIN_PASSWORD:?Задайте GEOSERVER_ADMIN_PASSWORD в .env (локальный, произвольный — не боевой)}
     ports:
       - "8090:8080"
     volumes:

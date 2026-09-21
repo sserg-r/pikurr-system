@@ -1,0 +1,76 @@
+# Caddyfile (round22, задача 1) — заменяет nginx+certbot из round21
+# (сохранены в docs/legacy/, не используются).
+#
+# Caddy сам получает и продлевает сертификаты Let's Encrypt: проверяет срок
+# при каждом старте и периодически в фоне — на ежедневно перезапускаемой
+# прерываемой ВМ (round22) это устойчивее bootstrap-порядка certbot.
+#
+# Домен и почта — через переменные окружения контейнера (DOMAIN, ACME_EMAIL,
+# см. docker-compose.vps.yml), не хардкод.
+
+{
+	email {$ACME_EMAIL}
+
+	# Раунд 22, задача 6: первый прогон — на staging ACME (лимит боевого
+	# эндпоинта на неудачные проверки — 5/час/имя, легко исчерпать при
+	# отладке проксирования). Раскомментировать на время первого прогона,
+	# затем закомментировать обратно И удалить том caddy_data (иначе Caddy
+	# останется со staging-сертификатом, недоверенным браузерами) —
+	# см. docs/deploy-repikurr-vps.md, раздел "Домен и сертификат".
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# www → каноническое имя (без www). Caddy сам получает сертификат и для
+# www.{$DOMAIN} (оба имени в A-записях), редирект — сразу после этого.
+www.{$DOMAIN} {
+	redir https://{$DOMAIN}{uri} permanent
+}
+
+{$DOMAIN} {
+	encode gzip
+
+	# HTTP→HTTPS редирект — поведение Caddy по умолчанию для сайта с TLS,
+	# специально включать не нужно (подтверждено фактом при проверке, не
+	# только по документации — см. отчёт round22, задача 1).
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+	}
+
+	# round23, задача 1: список годов/районов — статика, не WFS-запрос
+	# к GeoServer (тот тянул все 55784+ объектов ради выпадающих списков,
+	# ~12с; сам SQL после round22/23-фиксов — миллисекунды, но GeoServer
+	# всё равно вытягивает полные строки независимо от propertyName).
+	# Файл пишет deliver.py после каждой доставки (REFRESH MATERIALIZED VIEW
+	# + пересчёт списков), данные между доставками не меняются — короткий
+	# Cache-Control достаточен, не вечный (на случай повторной доставки).
+	handle_path /static/* {
+		root * /srv/static
+		header Cache-Control "public, max-age=300"
+		file_server
+	}
+
+	# Админка GeoServer и REST — под basic_auth. Публичному фронтенду не
+	# нужны; deliver.py на этом же хосте ходит на geoserver напрямую через
+	# 127.0.0.1, минуя Caddy — закрытие здесь не мешает доставке.
+	@geoserver_admin path /geoserver/web* /geoserver/rest* /geoserver/gwc/rest*
+	handle @geoserver_admin {
+		basic_auth {
+			{$GEOSERVER_BASIC_AUTH_USER} {$GEOSERVER_BASIC_AUTH_HASH}
+		}
+		reverse_proxy geoserver:8080
+	}
+
+	# Всё остальное под /geoserver/ — WMS/WFS/WMTS/GWC-тайлы, публично
+	# (нужно фронтенду для карты).
+	handle /geoserver/* {
+		reverse_proxy geoserver:8080
+	}
+
+	# React SPA — всё, что не /geoserver/*.
+	handle {
+		reverse_proxy react-client:80
+	}
+}

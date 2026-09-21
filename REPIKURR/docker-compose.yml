@@ -8,7 +8,7 @@ services:
     environment:
       POSTGRES_DB: pikurr
       POSTGRES_USER: pikurr
-      POSTGRES_PASSWORD: pikurr
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env — файл устарел (см. docker-compose.server.yml), не хардкодить пароль}
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
@@ -20,7 +20,7 @@ services:
     restart: unless-stopped
     environment:
       - GEOSERVER_ADMIN_USER=admin
-      - GEOSERVER_ADMIN_PASSWORD=admin
+      - GEOSERVER_ADMIN_PASSWORD=${GEOSERVER_ADMIN_PASSWORD:?Задайте GEOSERVER_ADMIN_PASSWORD в .env — файл устарел (см. docker-compose.server.yml), не хардкодить пароль}
     ports:
       - "8080:8080"
     volumes:

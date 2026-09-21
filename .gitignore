@@ -6,6 +6,7 @@
 !.env_example
 !.dockerignore
 !package_and_push.sh
+!CLAUDE.md
 # Документация
 !docs/
 !docs/**
@@ -29,9 +30,13 @@
 REPIKURR/data/
 REPIKURR/inbox/
 REPIKURR/watchdog.pid
+REPIKURR/watchdog.lock
 REPIKURR/watchdog.log
+REPIKURR/failed/
+REPIKURR/status/
 REPIKURR/fromgeobotanyxyz/
 REPIKURR/deliver.env
+REPIKURR/.env
 # geoserver runtime (auto-generated): кэш тайлов, логи, бинарные базы дисковых квот
 REPIKURR/geoserver_data/geoserver_data/
 REPIKURR/geoserver_data/gwc/
@@ -45,6 +50,13 @@ REPIKURR/geoserver_data/security/masterpw.digest
 REPIKURR/geoserver_data/security/masterpw/default/passwd
 REPIKURR/geoserver_data/security/geoserver.jceks
 REPIKURR/geoserver_data/tomcat_pass.txt
+# round21, B1: содержит digest-хэш пароля admin — пропущен в исходном списке выше
+REPIKURR/geoserver_data/security/usergroup/default/users.xml
+# round26, A1: .orig-бэкапы security-каталога — users.xml.orig содержит тот же
+# digest-хэш пароля admin, что и users.xml; roles.xml.orig безвреден сам по себе,
+# но исключён для единообразия политики каталога security/
+REPIKURR/geoserver_data/security/usergroup/default/users.xml.orig
+REPIKURR/geoserver_data/security/role/default/roles.xml.orig
 # Кэш React-сборки
 REPIKURR/repikurr/node_modules/
 REPIKURR/repikurr/dist/
