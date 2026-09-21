@@ -1,0 +1,85 @@
+# nginx.vps.conf.template (round21, B2) — обрабатывается образом nginx:1.27-alpine
+# автоматически (envsubst по /etc/nginx/templates/*.template → conf.d/*.conf при
+# старте контейнера). Переменные окружения контейнера: DOMAIN,
+# GEOSERVER_BASIC_AUTH_FILE (см. docker-compose.vps.yml).
+#
+# Не разворачивать до аренды VPS/домена. Первичный выпуск сертификата и порядок
+# запуска — см. docs/deploy-repikurr-vps.md, раздел "Домен и сертификат":
+# нужен bootstrap (сначала только порт 80 + ACME challenge, затем сертификат,
+# затем полный конфиг с 443).
+
+# --- 80: ACME challenge + редирект на https ---
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# --- 443: TLS, единственная публичная точка входа ---
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+
+    # Заголовки безопасности (round21, B2)
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+
+    # React SPA
+    location / {
+        proxy_pass http://react-client/;
+        proxy_set_header Host $host;
+        proxy_intercept_errors on;
+        error_page 404 = /index.html;
+    }
+
+    # Админка GeoServer — закрыта. Публичному фронтенду не нужна; deliver.py
+    # ходит напрямую на 127.0.0.1:8090 в обход nginx (см. docker-compose.vps.yml),
+    # так что закрытие здесь не мешает доставке.
+    location /geoserver/web/ {
+        auth_basic "PIKURR admin";
+        auth_basic_user_file ${GEOSERVER_BASIC_AUTH_FILE};
+        proxy_pass http://geoserver:8080/geoserver/web/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # REST API — тоже закрыта по той же причине (используется только deliver.py
+    # с этого же хоста, не с фронтенда).
+    location /geoserver/rest/ {
+        auth_basic "PIKURR admin";
+        auth_basic_user_file ${GEOSERVER_BASIC_AUTH_FILE};
+        proxy_pass http://geoserver:8080/geoserver/rest/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+    location /geoserver/gwc/rest/ {
+        auth_basic "PIKURR admin";
+        auth_basic_user_file ${GEOSERVER_BASIC_AUTH_FILE};
+        proxy_pass http://geoserver:8080/geoserver/gwc/rest/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # Всё остальное под /geoserver/ — WMS/WFS/WMTS/GWC-тайлы, публично
+    # (нужно фронтенду для отображения карты).
+    location /geoserver/ {
+        proxy_pass http://geoserver:8080/geoserver/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
