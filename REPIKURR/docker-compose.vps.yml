@@ -57,6 +57,12 @@ services:
       # WMS-запросов).
       - INITIAL_MEMORY=512M
       - MAXIMUM_MEMORY=2048M
+      # round27, B2: журнал сборки мусора JVM — только диагностика, не
+      # меняет поведение GC (без этого нельзя отличить паузу JVM от
+      # отобранного гипервизором процессорного времени, round26 B3).
+      # Путь — внутри смонтированного data_dir, чтобы лог пережил
+      # перезапуск/пересоздание контейнера и читался прямо с хоста.
+      - ADDITIONAL_JAVA_STARTUP_OPTIONS=-Xlog:gc*:file=/opt/geoserver/data_dir/gc.log:time,uptime,level,tags:filecount=5,filesize=20M
     volumes:
       - ./geoserver_data:/opt/geoserver/data_dir
       - ./data:/mnt/data
