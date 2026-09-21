@@ -507,26 +507,69 @@ def ensure_unique_constraint():
     logger.info("Ограничение assessment_fid_year_key применено.")
 
 
-def assessment_ready_is_materialized() -> bool:
-    """round25, блок B2: проверяет, существует ли assessment_ready уже как
-    материализованное представление (relkind='m') — если да, полная
-    миграция schema (`recreate_views`) не нужна на этой доставке, это
-    путь только для первого развёртывания/смены типа объекта."""
-    env = os.environ.copy()
-    env["PGPASSWORD"] = FRONTEND_DB["password"]
-    cmd = [
-        "psql",
-        "-h", FRONTEND_DB["host"],
-        "-p", str(FRONTEND_DB["port"]),
-        "-U", FRONTEND_DB["user"],
-        "-d", FRONTEND_DB["name"],
-        "-tAc",
-        "SELECT relkind FROM pg_class WHERE relname = 'assessment_ready';",
-    ]
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"Не удалось проверить тип assessment_ready:\n{result.stderr}")
-    return result.stdout.strip() == "m"
+# round27, A2: версия схемы объектов assessment_ready/levelsagg_ready,
+# должна совпадать со SCHEMA_VERSION в create_assessment_schema.sql
+# (COMMENT ON MATERIALIZED VIEW ... IS 'schema_version=N').
+SCHEMA_VERSION = 2
+_VERSIONED_MATERIALIZED_VIEWS = ("assessment_ready", "levelsagg_ready")
+
+
+def _relkind(view_name: str) -> str:
+    return _run_psql(
+        f"SELECT relkind FROM pg_class WHERE relname = '{view_name}';"
+    ).strip()
+
+
+def _schema_version_on_object(view_name: str) -> int | None:
+    """round27, A2: версия схемы, записанная COMMENT ON MATERIALIZED
+    VIEW. None — объект не существует или комментарий не задан."""
+    comment = _run_psql(
+        f"SELECT obj_description('{view_name}'::regclass::oid, 'pg_class');"
+    ).strip()
+    m = re.search(r"schema_version=(\d+)", comment)
+    return int(m.group(1)) if m else None
+
+
+def assessment_schema_up_to_date() -> bool:
+    """round25, блок B2 + round27, блок A2: True, если ВСЕ объекты из
+    _VERSIONED_MATERIALIZED_VIEWS уже материализованы (relkind='m') И их
+    версия схемы совпадает с SCHEMA_VERSION — тогда recreate_views() не
+    нужен, обновление сводится к REFRESH. round26, B5 нашёл фактом:
+    `CREATE MATERIALIZED VIEW IF NOT EXISTS` молча пропускает смену
+    определения уже существующего объекта — простой relkind='m' (как
+    было до этого раунда) не отличает «актуальная схема» от «схема
+    старой версии, но уже материализована»; версия на объекте отличает."""
+    for view in _VERSIONED_MATERIALIZED_VIEWS:
+        try:
+            if _relkind(view) != "m":
+                return False
+        except RuntimeError:
+            return False
+        if _schema_version_on_object(view) != SCHEMA_VERSION:
+            return False
+    return True
+
+
+def ensure_assessment_schema(sql_path: Path):
+    """round27, A2: если версия схемы расходится (или объект отсутствует/
+    не материализован) — явно дропает старые материализованные объекты
+    ПЕРЕД повторным запуском SQL-скрипта (`CREATE ... IF NOT EXISTS` сам
+    по себе не заменит уже существующий объект, round26 B5 — простое
+    повторение recreate_views() без явного DROP не решает проблему).
+    Если версия совпадает — ничего не делает, OID объектов не меняется."""
+    if assessment_schema_up_to_date():
+        logger.info(
+            f"Схема (schema_version={SCHEMA_VERSION}) актуальна — "
+            f"recreate_views пропущен, обновление только через REFRESH."
+        )
+        return
+    logger.info(
+        f"Версия схемы объекта не совпадает с SCHEMA_VERSION={SCHEMA_VERSION} "
+        f"(или объект отсутствует/не материализован) — пересоздаю."
+    )
+    for view in _VERSIONED_MATERIALIZED_VIEWS:
+        _run_psql(f"DROP MATERIALIZED VIEW IF EXISTS {view} CASCADE;")
+    recreate_views(sql_path)
 
 
 def recreate_views(sql_path: Path):
@@ -585,7 +628,8 @@ def _run_psql(sql: str) -> str:
 
 
 def refresh_materialized_view():
-    """REFRESH MATERIALIZED VIEW assessment_ready (round23, задача 2).
+    """REFRESH MATERIALIZED VIEW assessment_ready, levelsagg_ready
+    (round23, задача 2; levelsagg_ready добавлен round27, A1).
 
     Обычный REFRESH, не CONCURRENTLY: держит ACCESS EXCLUSIVE лок на время
     пересборки (замер на боевых данных VPS — секунды, не минуты), но не
@@ -593,14 +637,22 @@ def refresh_materialized_view():
     (который сам медленнее обычного REFRESH). На витрине с редкими
     доставками (не чаще нескольких раз в год) и невысоким постоянным
     трафиком короткая блокировка на чтение не обосновывает эту сложность —
-    уникальный индекс (nr_user, year) уже есть в схеме, so при необходимости
-    перейти на CONCURRENTLY в будущем — чисто техническая правка.
+    уникальный индекс (nr_user, year)/(usname, usern_co, rn) уже есть в
+    схеме, so при необходимости перейти на CONCURRENTLY в будущем — чисто
+    техническая правка.
+
+    round27, A1: levelsagg_ready заменил прямое чтение featuretype
+    `levelsagg` из боевой agrifields (round26, B2: блокировался на всё
+    время транзакции подмены _stage→боевые, ~14.6с на VPS) — обновляется
+    здесь же, той же доставкой, что и assessment_ready, ПОСЛЕ подмены
+    _stage→боевые (agrifields к этому моменту уже боевая, свежая).
     """
-    logger.info("Обновляю материализованное представление assessment_ready...")
+    logger.info("Обновляю материализованные представления assessment_ready, levelsagg_ready...")
     t0 = time.monotonic()
     _run_psql("REFRESH MATERIALIZED VIEW assessment_ready;")
+    _run_psql("REFRESH MATERIALIZED VIEW levelsagg_ready;")
     elapsed = time.monotonic() - t0
-    logger.info(f"Представление обновлено за {elapsed:.2f}с.")
+    logger.info(f"Представления обновлены за {elapsed:.2f}с.")
     return elapsed
 
 
@@ -971,13 +1023,7 @@ def deliver(zip_path: Path, tracker: "_StepTracker", *,
         # если объект существует, но не того типа (например, обычный VIEW
         # от bootstrap-заглушки).
         tracker.step = "recreate_views"
-        if assessment_ready_is_materialized():
-            logger.info(
-                "assessment_ready уже материализован — recreate_views пропущен "
-                "(round25, блок B2), обновление только через REFRESH ниже."
-            )
-        else:
-            recreate_views(tmp / "create_assessment_schema.sql")
+        ensure_assessment_schema(tmp / "create_assessment_schema.sql")
 
         # 4б. Обновить материализованное представление (round23, задача 2) —
         # после импорта векторов, до перезагрузки слоёв GeoServer (порядок

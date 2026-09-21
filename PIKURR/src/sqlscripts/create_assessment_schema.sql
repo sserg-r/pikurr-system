@@ -1,3 +1,12 @@
+-- round27, A2: версия схемы объектов assessment_ready/levelsagg_ready.
+-- CREATE MATERIALIZED VIEW IF NOT EXISTS молча пропускает смену
+-- определения уже существующего объекта (обнаружено фактом round26,
+-- B5) — deliver.py сравнивает эту версию (COMMENT ON MATERIALIZED VIEW
+-- в конце файла) с версией, записанной в коде, и пересоздаёт объект
+-- только при расхождении. Поднимать это число при ЛЮБОЙ смене SELECT
+-- в assessment_ready/levelsagg_ready ниже.
+-- SCHEMA_VERSION = 2
+
 -- 1. Таблица результатов оценки
 CREATE TABLE IF NOT EXISTS assessment (
     id SERIAL PRIMARY KEY,
@@ -150,8 +159,44 @@ CREATE INDEX IF NOT EXISTS idx_assessment_ready_geom ON assessment_ready USING G
 -- Используется слоем fields_latest в GeoServer (режим "Все годы").
 -- Обычный VIEW (не материализованный) — база (assessment_ready) уже
 -- материализована и индексирована, DISTINCT ON по ней быстр сам по себе.
-DROP MATERIALIZED VIEW IF EXISTS assessment_ready_latest;
+-- round27, A2 (найдено фактом при повторном прогоне на стенде):
+-- `DROP MATERIALIZED VIEW IF EXISTS` падает, если объект уже
+-- существует, но как обычный VIEW (штатное состояние с round26 —
+-- CREATE OR REPLACE VIEW ниже как раз и делает его таким) — IF EXISTS
+-- защищает только от отсутствия объекта, не от несовпадения типа.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_matviews WHERE matviewname = 'assessment_ready_latest') THEN
+        DROP MATERIALIZED VIEW assessment_ready_latest;
+    ELSIF EXISTS (SELECT 1 FROM pg_views WHERE viewname = 'assessment_ready_latest') THEN
+        DROP VIEW assessment_ready_latest;
+    END IF;
+END $$;
 CREATE OR REPLACE VIEW assessment_ready_latest AS
 SELECT DISTINCT ON (nr_user) *
 FROM   assessment_ready
 ORDER  BY nr_user, year DESC;
+
+-- levelsagg_ready (round27, A1): список землепользователей для слоя
+-- pikurr:levelsagg. Раньше featuretype levelsagg читал agrifields
+-- НАПРЯМУЮ (virtualTable SQL в GeoServer) — единственный слой,
+-- обходивший assessment_ready, и единственный, блокировавшийся на всё
+-- время транзакции подмены _stage→боевые (round26, B2: ~14.6с на VPS).
+-- Материализуем тот же SELECT (семантика не менялась) и обновляем в
+-- той же доставке, что и assessment_ready (deliver.py,
+-- refresh_materialized_view()) — GeoServer-featuretype levelsagg
+-- переключён (вручную, REST) на этот объект вместо agrifields.
+CREATE MATERIALIZED VIEW IF NOT EXISTS levelsagg_ready AS
+SELECT DISTINCT
+    usname,
+    usern_co,
+    LEFT(usern_co, 4) AS rn
+FROM agrifields;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_levelsagg_ready_all
+    ON levelsagg_ready (usname, usern_co, rn);
+
+-- round27, A2: маркер версии схемы обоих материализованных объектов —
+-- см. пояснение и SCHEMA_VERSION в начале файла.
+COMMENT ON MATERIALIZED VIEW assessment_ready IS 'schema_version=2';
+COMMENT ON MATERIALIZED VIEW levelsagg_ready IS 'schema_version=2';
