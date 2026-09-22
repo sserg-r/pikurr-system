@@ -29,6 +29,25 @@ www.{$DOMAIN} {
 {$DOMAIN} {
 	encode gzip
 
+	# round29, блок D3: журнал доступа — без тел запросов/ответов (Caddy
+	# их и не логирует по умолчанию) и без чувствительных заголовков
+	# (Authorization/Cookie — единственные реально чувствительные здесь,
+	# явно исключены). Ротация — 20 МБ x 5 файлов, тот же принцип, что и
+	# у GC-лога GeoServer (round27, B2).
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 20mb
+			roll_keep 5
+		}
+		format filter {
+			wrap json
+			fields {
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+			}
+		}
+	}
+
 	# HTTP→HTTPS редирект — поведение Caddy по умолчанию для сайта с TLS,
 	# специально включать не нужно (подтверждено фактом при проверке, не
 	# только по документации — см. отчёт round22, задача 1).
@@ -65,8 +84,23 @@ www.{$DOMAIN} {
 
 	# Всё остальное под /geoserver/ — WMS/WFS/WMTS/GWC-тайлы, публично
 	# (нужно фронтенду для карты).
+	#
+	# round29, блок D2: GeoServer не выставляет Cache-Control ни на 200,
+	# ни на ошибках (round29, D1 — заголовки проверены фактом, пусто) —
+	# при отсутствии явной директивы браузер может закэшировать ответ
+	# ЭВРИСТИЧЕСКИ, и именно так, по round28 A6, один случайный HTTP 503
+	# навсегда "залипал" для fields_latest (там ещё и без cache-buster —
+	# исправлено в блоке C, но защита здесь — уровень ниже, на случай
+	# любого другого динамического запроса без явного &time=). Ответы с
+	# кодом НЕ 200 — Cache-Control: no-store; 200 — поведение не меняется
+	# (round28/round29 не нашли оснований трогать успешные ответы).
 	handle /geoserver/* {
-		reverse_proxy geoserver:8080
+		reverse_proxy geoserver:8080 {
+			@error status 400 401 403 404 405 500 502 503 504
+			handle_response @error {
+				header Cache-Control "no-store"
+			}
+		}
 	}
 
 	# React SPA — всё, что не /geoserver/*.
