@@ -102,6 +102,11 @@ services:
       # останется без сертификата на неделю.
       - caddy_data:/data
       - caddy_config:/config
+      # round29, блок D3: bind mount для персистентности журнала доступа
+      # (без него access.log живёт только в слое контейнера и теряется
+      # при docker compose up -d / пересоздании — как и caddy_data выше,
+      # но для лога, не сертификатов).
+      - ./caddy_logs:/var/log/caddy
       # round23, задача 1: список годов/районов, который deliver.py пишет
       # после каждой доставки (~/repikurr/static/ на хосте, вне docker) —
       # bind mount, не именованный том (это не постоянное состояние Caddy,
