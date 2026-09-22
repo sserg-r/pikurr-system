@@ -370,6 +370,26 @@ def import_vectors(gpkg_path: Path, *, staged: bool = True,
 _SWAP_ABORT_RE = re.compile(r"SWAP_ABORT\|([^|]+)\|([^|]+)\|stage=(\d+)\|prod=(\d+)")
 
 
+def _table_exists(table: str) -> bool:
+    """round28, блок E: проверка перед тем, как что-то делать с боевой
+    таблицей — на самой первой доставке (пустая БД) её ещё нет."""
+    return _run_psql(f"SELECT to_regclass('{table}') IS NOT NULL;").strip() == "t"
+
+
+def _stage_columns(layer: str) -> list[str]:
+    """round28, блок E: реальный список колонок '<layer>_stage' (в том
+    порядке, в котором их создал ogr2ogr) — основа для явного списка
+    колонок в INSERT, устойчивого к лишним колонкам у боевой таблицы
+    (например, 'valuation' у assessment, которой ogr2ogr не создаёт)."""
+    result = _run_psql(
+        f"SELECT string_agg(column_name, ',' ORDER BY ordinal_position) "
+        f"FROM information_schema.columns WHERE table_name = '{layer}_stage';"
+    ).strip()
+    if not result:
+        raise RuntimeError(f"Не удалось получить список колонок '{layer}_stage' (таблица пуста или не существует?).")
+    return result.split(",")
+
+
 def _swap_staged_tables(layers: list[str], *,
                          shrink_threshold: float = DEFAULT_SHRINK_THRESHOLD,
                          allow_shrink: bool = False):
@@ -395,10 +415,37 @@ def _swap_staged_tables(layers: list[str], *,
     EXCEPTION внутри BEGIN/COMMIT), боевые таблицы не тронуты.
     `allow_shrink=True` (флаг `--allow-shrink`) отключает обе проверки —
     для законного случая, когда данных должно стать меньше.
+
+    round28, блок E: если боевая таблица ещё не существует вообще
+    (самая первая доставка на пустую БД — найдено фактом при
+    развёртывании эмулятора с нуля, round27/28) — раньше проверка
+    объёма падала с ошибкой Postgres «relation does not exist» вместо
+    внятного пути. Теперь для таких слоёв: guard по объёму пропускается
+    (сравнивать не с чем), а сама боевая таблица создаётся по образцу
+    `_stage` (`CREATE TABLE ... LIKE ... INCLUDING ALL`) внутри той же
+    транзакции — атомарно с переносом данных.
+
+    round28, блок E: `INSERT INTO {layer} SELECT * FROM {layer}_stage`
+    (позиционный, без списка колонок) предполагал одинаковый набор/
+    порядок колонок в боевой и `_stage` таблице — не так для
+    `assessment`, где боевая таблица содержит дополнительную колонку
+    `valuation` (заполняется отдельно от импорта, отсутствует у
+    `ogr2ogr`). INSERT теперь использует явный список колонок `_stage`
+    (устойчиво к любым лишним колонкам цели, не только к `valuation`).
     """
+    existing = {layer: _table_exists(layer) for layer in layers}
+    missing = [layer for layer, exists in existing.items() if not exists]
+    for layer in missing:
+        logger.warning(
+            f"  Боевая таблица '{layer}' не существует — похоже, это первая "
+            f"доставка. Создаю по образцу '{layer}_stage'."
+        )
+
     statements = []
     if not allow_shrink:
         for layer in layers:
+            if layer in missing:
+                continue  # нечего сравнивать — таблицы ещё нет
             statements.append(f"""
 DO $$
 DECLARE
@@ -415,10 +462,43 @@ BEGIN
 END $$;
 """.strip())
 
+    for layer in missing:
+        statements.append(f"CREATE TABLE {layer} (LIKE {layer}_stage INCLUDING ALL);")
+        # round28, блок E (найдено фактом при проверке с нуля на эмуляторе):
+        # "LIKE ... INCLUDING ALL" копирует DEFAULT-выражение колонок
+        # дословно — для SERIAL-колонки (например, ogr2ogr'овский
+        # "ogc_fid") это буквально nextval('{layer}_stage_ogc_fid_seq'),
+        # т.е. боевая таблица остаётся привязана к ПОСЛЕДОВАТЕЛЬНОСТИ
+        # _stage-таблицы. Ниже DROP TABLE {layer}_stage тогда падает:
+        # "cannot drop table ... because other objects depend on it".
+        # Перепривязываем такие колонки на свежую, "родную" для боевой
+        # таблицы последовательность — до TRUNCATE/INSERT, тем же BEGIN.
+        statements.append(f"""
+DO $$
+DECLARE
+  col RECORD;
+  newseq TEXT;
+BEGIN
+  FOR col IN
+    SELECT a.attname
+    FROM pg_attrdef d
+    JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+    WHERE d.adrelid = '{layer}'::regclass
+      AND pg_get_expr(d.adbin, d.adrelid) LIKE 'nextval(%{layer}_stage%'
+  LOOP
+    newseq := '{layer}_' || col.attname || '_seq';
+    EXECUTE format('CREATE SEQUENCE %I OWNED BY %I.%I', newseq, '{layer}', col.attname);
+    EXECUTE format('ALTER TABLE %I ALTER COLUMN %I SET DEFAULT nextval(%L)', '{layer}', col.attname, newseq);
+  END LOOP;
+END $$;
+""".strip())
+
     truncate_list = ", ".join(layers)
     statements.append(f"TRUNCATE {truncate_list};")
     for layer in layers:
-        statements.append(f"INSERT INTO {layer} SELECT * FROM {layer}_stage;")
+        cols = _stage_columns(layer)
+        col_list = ", ".join(cols)
+        statements.append(f"INSERT INTO {layer} ({col_list}) SELECT {col_list} FROM {layer}_stage;")
     for layer in layers:
         statements.append(f"DROP TABLE {layer}_stage;")
     sql = "BEGIN;\n" + "\n".join(statements) + "\nCOMMIT;\n"
@@ -568,6 +648,14 @@ def ensure_assessment_schema(sql_path: Path):
         f"(или объект отсутствует/не материализован) — пересоздаю."
     )
     for view in _VERSIONED_MATERIALIZED_VIEWS:
+        # round28, блок E (найдено фактом при проверке с нуля на эмуляторе):
+        # после bootstrap-заглушки объект — обычный VIEW, не
+        # MATERIALIZED VIEW; "DROP MATERIALIZED VIEW IF EXISTS" в этом
+        # случае падает ("... is not a materialized view"), т.к. IF
+        # EXISTS проверяет только наличие ИМЕНИ, не тип объекта. Дропаем
+        # оба варианта — ровно как уже делает bootstrap_empty_schema.sql
+        # для этого же перехода "было VIEW → стало MATERIALIZED VIEW".
+        _run_psql(f"DROP VIEW IF EXISTS {view} CASCADE;")
         _run_psql(f"DROP MATERIALIZED VIEW IF EXISTS {view} CASCADE;")
     recreate_views(sql_path)
 

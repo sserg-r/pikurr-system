@@ -18,12 +18,13 @@
 -- именно под этот случай "было обычным view, стало материализованным".
 
 CREATE TABLE IF NOT EXISTS assessment (
-    id SERIAL PRIMARY KEY,
+    fid SERIAL PRIMARY KEY,
+    id INTEGER NOT NULL,
     fid_ext BIGINT NOT NULL,
     year INTEGER NOT NULL,
-    stats JSONB,
-    description TEXT,
-    updated_at TIMESTAMP DEFAULT NOW(),
+    stats VARCHAR,
+    description VARCHAR,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
     valuation TEXT,
     CONSTRAINT assessment_fid_year_key UNIQUE (fid_ext, year)
 );

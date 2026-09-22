@@ -7,15 +7,76 @@
 -- в assessment_ready/levelsagg_ready ниже.
 -- SCHEMA_VERSION = 2
 
--- 1. Таблица результатов оценки
+-- round28, блок E: CREATE TABLE ниже для agrifields/razgrafka/assessment
+-- приведены к тому, что реально создаёт `ogr2ogr` из GPKG пакета (не
+-- к тому, что казалось логичным на бумаге) — расхождение обнаружено
+-- фактом при развёртывании эмулятора с нуля (round27/28): на боевых
+-- VPS/стенде это никогда не проявлялось, потому что там эти таблицы
+-- существуют с давних раундов и `CREATE TABLE IF NOT EXISTS` молча
+-- пропускается — расхождение всплывает только на no истинно пустой БД.
+-- Реальная структура снята напрямую с `psql \d` на VPS/эмуляторе
+-- (`agrifields`/`razgrafka` — из `..._stage`, `assessment` — с самого
+-- боевого VPS, `\d assessment`).
+
+-- 0a. Векторные слои — ogr2ogr создаёт их сам при импорте (`-overwrite`
+-- в `import_vectors()`, deliver.py), но ТОЛЬКО если целевое имя ещё не
+-- существует по-другому: `_swap_staged_tables()` (round28, блок E)
+-- переносит данные в БОЕВЫЕ имена `agrifields`/`razgrafka`, которых на
+-- истинно пустой БД ещё нет — без явного CREATE TABLE здесь guard по
+-- объёму (round26, B1) падал с ошибкой Postgres «relation does not
+-- exist» вместо понятного пути первой доставки.
+CREATE TABLE IF NOT EXISTS agrifields (
+    ogc_fid    SERIAL PRIMARY KEY,
+    objectid   DOUBLE PRECISION,
+    usname     VARCHAR(250),
+    num_rab    DOUBLE PRECISION,
+    ball_plpoc DOUBLE PRECISION,
+    ball_co    DOUBLE PRECISION,
+    ndohod_d   DOUBLE PRECISION,
+    ddohod_d   DOUBLE PRECISION,
+    dateco     VARCHAR(24),
+    nr_user    VARCHAR(15),
+    usern_co   VARCHAR(10),
+    landcode   DOUBLE PRECISION,
+    soato      VARCHAR(10),
+    objectnumb DOUBLE PRECISION,
+    usern      DOUBLE PRECISION,
+    num_brigad DOUBLE PRECISION,
+    shape_leng DOUBLE PRECISION,
+    shape_area DOUBLE PRECISION,
+    geom       GEOMETRY(Geometry, 4326)
+);
+CREATE INDEX IF NOT EXISTS idx_agrifields_geom ON agrifields USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_agrifields_nr_user ON agrifields (nr_user);
+
+CREATE TABLE IF NOT EXISTS razgrafka (
+    ogc_fid   SERIAL PRIMARY KEY,
+    m10000_id INTEGER,
+    n10000    VARCHAR(80),
+    geom      GEOMETRY(Geometry, 4326)
+);
+CREATE INDEX IF NOT EXISTS idx_razgrafka_geom ON razgrafka USING GIST (geom);
+
+-- 1. Таблица результатов оценки. Колонка "fid" (не "id"!) — реальный
+-- первичный ключ, который создаёт ogr2ogr (OGC FID); "id" — обычная
+-- колонка с исходными данными пакета, не путать. "stats"/"description"
+-- — VARCHAR, не JSONB/TEXT (проверено на боевом VPS фактом, `\d
+-- assessment`) — тип JSONB на пустой БД принял бы данные из
+-- `ogr2ogr`, но конфликтовал бы при позиционном INSERT/типизации,
+-- если реальный боевой тип отличается. "valuation" ogr2ogr не создаёт
+-- вообще (заполняется только фронтендом/legacy-данными) — не входит в
+-- список колонок `_stage`, `deliver.py` (`_stage_columns()`, round28)
+-- вставляет в него данные явным списком колонок, эта дополнительная
+-- колонка остаётся NULL при обычном импорте.
 CREATE TABLE IF NOT EXISTS assessment (
-    id SERIAL PRIMARY KEY,
+    fid SERIAL PRIMARY KEY,
+    id INTEGER NOT NULL,
     fid_ext BIGINT NOT NULL,       -- ID пользователя/поля из agrifields
     year INTEGER NOT NULL,         -- Год оценки
-    stats JSONB,                   -- Статистика в JSON (новые данные)
-    description TEXT,              -- HTML таблица (для GeoServer / legacy)
-    updated_at TIMESTAMP DEFAULT NOW(),
-    valuation TEXT,                -- Категория (legacy: если stats IS NULL)
+    stats VARCHAR,                 -- Статистика в JSON-строке (новые данные)
+    description VARCHAR,           -- HTML таблица (для GeoServer / legacy)
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    valuation TEXT,                -- Категория (legacy: если stats IS NULL) — ogr2ogr не создаёт
 
     CONSTRAINT assessment_fid_year_key UNIQUE (fid_ext, year)
 );
