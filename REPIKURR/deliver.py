@@ -261,6 +261,29 @@ class SwapGuardError(RuntimeError):
     pass
 
 
+class SchemaVersionError(RuntimeError):
+    """round29, блок A: пакет несёт SQL-схему СТАРШЕ, чем уже применённая
+    на боевой БД — доставка отклоняется до единого изменения БД, чтобы
+    не откатить схему назад (найдено фактом: рассинхрон стенда с
+    репозиторием мог унести на VPS устаревший SQL, round29 A1-A2)."""
+    pass
+
+
+_SCHEMA_VERSION_MARKER_RE = re.compile(r'--\s*SCHEMA_VERSION\s*=\s*(\d+)')
+
+
+def _package_schema_version(sql_path: Path) -> int | None:
+    """round29, блок A: версия схемы, заявленная пакетом (маркер
+    `-- SCHEMA_VERSION = N` в начале create_assessment_schema.sql).
+    None — в пакете нет этого файла (легаси/assessment-only пакет,
+    не трогающий схему — не о чем предупреждать) или маркер не найден."""
+    if not sql_path.exists():
+        return None
+    text = sql_path.read_text(encoding="utf-8")
+    m = _SCHEMA_VERSION_MARKER_RE.search(text)
+    return int(m.group(1)) if m else None
+
+
 def import_vectors(gpkg_path: Path, *, staged: bool = True,
                     shrink_threshold: float = DEFAULT_SHRINK_THRESHOLD,
                     allow_shrink: bool = False):
@@ -1076,6 +1099,23 @@ def deliver(zip_path: Path, tracker: "_StepTracker", *,
         tracker.step = "unpack"
         manifest = unpack(zip_path, tmp)
         year = manifest["year"]  # последний год (для legacy-совместимости)
+
+        # 1б. round29, блок A: защита от отката схемы — до ЛЮБОГО изменения
+        # БД/растров сверяем версию схемы, которую несёт пакет, со своей
+        # SCHEMA_VERSION. Пакет старше боевой схемы — отказ, ничего не
+        # тронуто (найдено фактом: рассинхрон стенда с репозиторием мог
+        # унести на VPS устаревший SQL — не произошло на практике, round29
+        # A1-A2, но защита не должна зависеть от того, повезло ли в этот раз).
+        tracker.step = "check_schema_version"
+        pkg_schema_version = _package_schema_version(tmp / "create_assessment_schema.sql")
+        if pkg_schema_version is not None and pkg_schema_version < SCHEMA_VERSION:
+            raise SchemaVersionError(
+                f"Пакет несёт SCHEMA_VERSION={pkg_schema_version}, боевая "
+                f"схема уже на SCHEMA_VERSION={SCHEMA_VERSION} — доставка "
+                f"отклонена, чтобы не откатить схему назад. Ничего не "
+                f"тронуто. Обновите стенд (`git pull`, пересоберите ETL-"
+                f"образ) и соберите пакет заново."
+            )
 
         # 2. Растры (все годы из пакета)
         tracker.step = "copy_rasters"
