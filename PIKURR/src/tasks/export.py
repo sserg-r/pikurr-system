@@ -1,4 +1,5 @@
 import logging
+import subprocess
 from pathlib import Path
 from typing import List, Dict
 
@@ -13,6 +14,37 @@ from src.services.db import DatabaseService
 from src.utils.timeutils import get_target_year
 
 logger = logging.getLogger(__name__)
+
+# round29, блок B: пересборка в Cloud-Optimized GeoTIFF (тайлы+обзоры
+# одной командой) — параметры подобраны и проверены в round28 (блок C,
+# рычаг 1): данные категориальные (несколько дискретных классов, не
+# непрерывный тон), поэтому передискретизация обзоров — nearest, не
+# average (иначе появятся несуществующие "смешанные" классы).
+# BLOCKSIZE=512 и COMPRESS=LZW — так же, как round28 проверил на всей
+# мозаике (checksum до/после идентичен, объём меньше исходника).
+_COG_TRANSLATE_OPTS = [
+    "-of", "COG",
+    "-co", "COMPRESS=LZW",
+    "-co", "RESAMPLING=NEAREST",
+    "-co", "BLOCKSIZE=512",
+]
+
+
+def _convert_to_cog(path: Path) -> None:
+    """round29, блок B: пересобирает GeoTIFF по пути `path` в COG на
+    месте (через временный файл — gdal_translate не пишет поверх
+    своего же источника). Вызывается ПОСЛЕ того, как маскирование
+    (process_trapeze) уже записало обычный GeoTIFF — сама математика
+    маски и merge_imageset не меняются, COG — чисто финальный шаг
+    формата хранения."""
+    tmp_path = path.with_suffix(".cog_tmp.tif")
+    cmd = ["gdal_translate", *_COG_TRANSLATE_OPTS, str(path), str(tmp_path)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"gdal_translate (COG) не удался для {path}: {result.stderr}")
+        tmp_path.unlink(missing_ok=True)
+        return
+    tmp_path.replace(path)
 
 class ExportTask:
     def __init__(self):
@@ -138,7 +170,12 @@ class ExportTask:
                 
                 with rasterio.open(out_path, 'w', **profile) as dst:
                     dst.write(masked_data, 1)
-                    
+
+                # round29, блок B: COG — тайлинг+обзоры+сжатие одной
+                # командой, после того как маска уже записана обычным
+                # GeoTIFF выше (математика маски не меняется).
+                _convert_to_cog(out_path)
+
         except Exception as e:
             logger.error(f"Error exporting {trap_name}: {e}")
 
