@@ -71,12 +71,26 @@ function App() {
   }
 
   // автозагрузка доступных годов и маппинга район→год
+  //
+  // round29, блок C: раньше здесь сразу после загрузки списка годов
+  // вызывался setSelectedYear(<последний год>) — а selectedYear=null
+  // уже означает "последний год" (см. MapView.jsx: vectorLayer =
+  // selectedYear ? 'pikurr:fields' : 'pikurr:fields_latest', и
+  // effectiveYear = selectedYear ?? maxYear). Установка selectedYear
+  // в КОНКРЕТНЫЙ год сразу после монтирования не меняла смысл (тот же
+  // последний год), но меняла КЛЮЧ WMSTileLayer в MapView.jsx — React
+  // размонтировал только что смонтированный слой fields_latest и
+  // монтировал fields, а уже отправленные HTTP-запросы fields_latest
+  // не отменялись Leaflet'ом и долетали до сервера вхолостую (round28,
+  // A3/рычаг 7: 24 тайла на загрузку вместо 12, половина — впустую).
+  // Не устанавливаем selectedYear автоматически — null и так рендерит
+  // корректный (последний) год; explicit-выбор пользователем остаётся
+  // (селектор года в Sidebar, handleReset ниже).
   if (!availableYears.length) {
     loadYearDistrictData()
       .then(({ years, districtsByYear: dby }) => {
         setAvailableYears(years)
         setDistrictsByYear(dby)
-        if (years.length > 0) setSelectedYear(years[years.length - 1])
       })
       .catch(e => console.error(e))
   }
@@ -87,8 +101,10 @@ function App() {
     setSelectedDistrict('')
     setBbox(null)
     setStats(null)
-    if (availableYears.length > 0)
-      setSelectedYear(availableYears[availableYears.length - 1])
+    // round29, блок C: null, не конкретный последний год — та же
+    // причина, что и в автозагрузке выше (null уже значит "последний
+    // год", явное значение только лишний раз переключает слой).
+    setSelectedYear(null)
   }
 
   // автодействия при выборе пользователя

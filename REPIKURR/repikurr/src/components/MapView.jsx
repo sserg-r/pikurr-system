@@ -168,12 +168,23 @@ function CoordBar({ coords }) {
 /* ---- MapView ---- */
 export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMosaic, selectedYear, maxYear }) {
   const initialCenter = useMemo(() => [55.2, 29.6], [])
-  const cacheBuster   = useMemo(() => (cqlExpr ? Date.now() : undefined), [cqlExpr])
+  // round29, блок C: раньше cacheBuster (и вместе с ним весь параметр
+  // `time` в URL тайла) существовал ТОЛЬКО когда был активен CQL-фильтр
+  // — у `pikurr:fields` (историчный год) он почти всегда есть (год сам
+  // становится частью фильтра), а у `pikurr:fields_latest` (режим "все
+  // годы", фильтра нет) — никогда. round28, A6 нашёл фактом: именно
+  // отсутствие `&time=<epoch>` у `fields_latest` даёт один случайный
+  // HTTP 503 в прошлом навсегда "залипнуть" в HTTP-кэше браузера для
+  // этого URL — `fields` той же уязвимости не подвержен ровно потому,
+  // что кэш-бастер у него уже был. Единый механизм для обоих слоёв:
+  // cacheBuster пересчитывается при каждом изменении cqlExpr (включая
+  // переход в/из "фильтра нет"), а не только когда фильтр ЕСТЬ.
+  const cacheBuster   = useMemo(() => Date.now(), [cqlExpr])
   const [clickCoords, setClickCoords] = useState(null)
 
   // Мемоизируем params чтобы WMSTileLayer не пересоздавался при посторонних ре-рендерах
   const wmsVectorParams = useMemo(
-    () => cqlExpr ? { CQL_FILTER: cqlExpr, time: cacheBuster } : undefined,
+    () => ({ ...(cqlExpr ? { CQL_FILTER: cqlExpr } : {}), time: cacheBuster }),
     [cqlExpr, cacheBuster]
   )
 
