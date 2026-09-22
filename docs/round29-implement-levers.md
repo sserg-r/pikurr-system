@@ -228,7 +228,7 @@ ETL не пересобирался (образ строился ДО правк
 **Откат** (код + данные):
 ```
 # откат кода:
-git -C /home/sgr/PIKURR_REFACTOR revert <хэш коммита с export.py COG>
+git -C /home/sgr/PIKURR_REFACTOR revert 9554640
 # затем на стенде: git pull, docker compose build etl, docker compose up -d etl
 
 # откат уже пересобранных растров (без пересборки кода):
