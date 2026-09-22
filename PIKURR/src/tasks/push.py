@@ -85,11 +85,27 @@ class PushTask:
         доставки пакета с тем же именем (при повторной отправке того же
         файла имя совпадает, и без проверки времени старый статус выглядит
         как подтверждение новой доставки — найдено на живом сервере при
-        проверке идемпотентности, round20)."""
+        проверке идемпотентности, round20).
+
+        round30, блок D: `deliver.py` пишет статус-файл не только в конце
+        (`finally`), но и во время работы — промежуточный вид
+        (`"step_in_progress": "<шаг>", "ok": null`), чтобы отслеживать ход
+        доставки и переживать сигналы (см. `deliver.py`, класс
+        `_StepTracker`). Раньше здесь любой файл с подходящим именем и
+        временем принимался как ОКОНЧАТЕЛЬНЫЙ — `ok: null` (ни успех, ни
+        отказ) интерпретировался как "не успех" (`if not status.get('ok')`
+        в `run()`), и `PushTask` **ложно** сообщал о провале доставки,
+        которая на самом деле ещё выполнялась (найдено фактом, round29,
+        блок B.4: реальная доставка на VPS завершилась успешно, но
+        `PushTask` отрапортовал ошибку, прочитав статус ДО его финальной
+        записи). Теперь промежуточный статус (`ok is None`) явно
+        отличается от финального — логируется как ход доставки, опрос
+        продолжается; ждём именно `ok: true` или `ok: false`."""
         status_path = self._status_path(package.name)
         deadline = time.monotonic() + self.status_timeout
         poll_interval = 5
         cmd = self._ssh_base_cmd() + [f'cat {status_path}']
+        last_step_logged = None
 
         while time.monotonic() < deadline:
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -105,13 +121,22 @@ class PushTask:
                     except (KeyError, ValueError):
                         started_at = None
                     if started_at is None or started_at >= not_before:
+                        if status.get('ok') is None:
+                            step = status.get('step_in_progress')
+                            if step != last_step_logged:
+                                logger.info(f"Доставка в процессе, шаг: {step}")
+                                last_step_logged = step
+                            time.sleep(poll_interval)
+                            continue
                         return status
             time.sleep(poll_interval)
 
         raise TimeoutError(
-            f"Не получено подтверждение доставки {package.name} за "
+            f"Не получено ИТОГОВОЕ подтверждение доставки {package.name} за "
             f"{self.status_timeout}с (файл статуса {status_path} не появился, "
-            f"не содержит нужный пакет, либо остался от прошлой доставки)."
+            f"не содержит нужный пакет, остался от прошлой доставки, либо "
+            f"доставка всё ещё идёт — последний известный шаг: "
+            f"{last_step_logged!r})."
         )
 
     def run(self):
