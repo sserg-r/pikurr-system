@@ -5,7 +5,14 @@
 -- в конце файла) с версией, записанной в коде, и пересоздаёт объект
 -- только при расхождении. Поднимать это число при ЛЮБОЙ смене SELECT
 -- в assessment_ready/levelsagg_ready ниже.
--- SCHEMA_VERSION = 2
+-- round30, блок B: assessment_ready_latest переведён в MATERIALIZED
+-- VIEW — обычный VIEW с DISTINCT ON НЕ давал планировщику протолкнуть
+-- пространственный фильтр тайла внутрь дедупликации: EXPLAIN на VPS
+-- показал полный Unique по всем 55784 строкам ДО фильтра (Rows Removed
+-- by Filter: 51181 из 55784), 236-293мс на тайл против 20.9-21.6мс у
+-- assessment_ready (GIST-индекс). Найдено фактом в round30, блок A —
+-- см. docs/round30-latest-view.md.
+-- SCHEMA_VERSION = 3
 
 -- round28, блок E: CREATE TABLE ниже для agrifields/razgrafka/assessment
 -- приведены к тому, что реально создаёт `ogr2ogr` из GPKG пакета (не
@@ -218,13 +225,17 @@ CREATE INDEX IF NOT EXISTS idx_assessment_ready_geom ON assessment_ready USING G
 
 -- assessment_ready_latest: для каждого поля — только самый свежий год.
 -- Используется слоем fields_latest в GeoServer (режим "Все годы").
--- Обычный VIEW (не материализованный) — база (assessment_ready) уже
--- материализована и индексирована, DISTINCT ON по ней быстр сам по себе.
--- round27, A2 (найдено фактом при повторном прогоне на стенде):
--- `DROP MATERIALIZED VIEW IF EXISTS` падает, если объект уже
--- существует, но как обычный VIEW (штатное состояние с round26 —
--- CREATE OR REPLACE VIEW ниже как раз и делает его таким) — IF EXISTS
--- защищает только от отсутствия объекта, не от несовпадения типа.
+--
+-- round30, блок B: был обычным VIEW (round26/27 обоснование — база
+-- уже материализована и индексирована, DISTINCT ON "быстр сам по
+-- себе" — опровергнуто фактом в round30, блок A: планировщик не может
+-- протолкнуть произвольный WHERE geom&&... сквозь DISTINCT ON, дедуп
+-- всегда идёт по ВСЕЙ таблице первым). Теперь MATERIALIZED VIEW — тот
+-- же SELECT, с GIST-индексом по geom (единственный фильтр, который
+-- реально шлёт GeoServer для этого слоя — round30, блок A.1: только
+-- bbox, без CQL_FILTER). round27, A2 миграционный путь (DROP
+-- VIEW/MATERIALIZED VIEW по фактическому типу объекта) сохранён —
+-- пригодится и для этого перехода (было VIEW → стало MATERIALIZED).
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_matviews WHERE matviewname = 'assessment_ready_latest') THEN
@@ -233,10 +244,15 @@ BEGIN
         DROP VIEW assessment_ready_latest;
     END IF;
 END $$;
-CREATE OR REPLACE VIEW assessment_ready_latest AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS assessment_ready_latest AS
 SELECT DISTINCT ON (nr_user) *
 FROM   assessment_ready
 ORDER  BY nr_user, year DESC;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_assessment_ready_latest_nr_user
+    ON assessment_ready_latest (nr_user);
+CREATE INDEX IF NOT EXISTS idx_assessment_ready_latest_geom
+    ON assessment_ready_latest USING GIST (geom);
 
 -- levelsagg_ready (round27, A1): список землепользователей для слоя
 -- pikurr:levelsagg. Раньше featuretype levelsagg читал agrifields
@@ -257,7 +273,8 @@ FROM agrifields;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_levelsagg_ready_all
     ON levelsagg_ready (usname, usern_co, rn);
 
--- round27, A2: маркер версии схемы обоих материализованных объектов —
+-- round27/30, A2: маркер версии схемы материализованных объектов —
 -- см. пояснение и SCHEMA_VERSION в начале файла.
-COMMENT ON MATERIALIZED VIEW assessment_ready IS 'schema_version=2';
-COMMENT ON MATERIALIZED VIEW levelsagg_ready IS 'schema_version=2';
+COMMENT ON MATERIALIZED VIEW assessment_ready IS 'schema_version=3';
+COMMENT ON MATERIALIZED VIEW levelsagg_ready IS 'schema_version=3';
+COMMENT ON MATERIALIZED VIEW assessment_ready_latest IS 'schema_version=3';

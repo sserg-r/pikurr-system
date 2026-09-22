@@ -613,8 +613,8 @@ def ensure_unique_constraint():
 # round27, A2: версия схемы объектов assessment_ready/levelsagg_ready,
 # должна совпадать со SCHEMA_VERSION в create_assessment_schema.sql
 # (COMMENT ON MATERIALIZED VIEW ... IS 'schema_version=N').
-SCHEMA_VERSION = 2
-_VERSIONED_MATERIALIZED_VIEWS = ("assessment_ready", "levelsagg_ready")
+SCHEMA_VERSION = 3
+_VERSIONED_MATERIALIZED_VIEWS = ("assessment_ready", "levelsagg_ready", "assessment_ready_latest")
 
 
 def _relkind(view_name: str) -> str:
@@ -671,15 +671,25 @@ def ensure_assessment_schema(sql_path: Path):
         f"(или объект отсутствует/не материализован) — пересоздаю."
     )
     for view in _VERSIONED_MATERIALIZED_VIEWS:
-        # round28, блок E (найдено фактом при проверке с нуля на эмуляторе):
-        # после bootstrap-заглушки объект — обычный VIEW, не
-        # MATERIALIZED VIEW; "DROP MATERIALIZED VIEW IF EXISTS" в этом
-        # случае падает ("... is not a materialized view"), т.к. IF
-        # EXISTS проверяет только наличие ИМЕНИ, не тип объекта. Дропаем
-        # оба варианта — ровно как уже делает bootstrap_empty_schema.sql
-        # для этого же перехода "было VIEW → стало MATERIALIZED VIEW".
-        _run_psql(f"DROP VIEW IF EXISTS {view} CASCADE;")
-        _run_psql(f"DROP MATERIALIZED VIEW IF EXISTS {view} CASCADE;")
+        # round28, блок E нашёл фактом: "DROP MATERIALIZED VIEW IF
+        # EXISTS" падает, если объект существует, но как обычный VIEW
+        # (после bootstrap-заглушки) — "IF EXISTS" проверяет только имя,
+        # не тип объекта. round30, блок B нашёл ОБРАТНЫЙ случай тем же
+        # фактом: "DROP VIEW IF EXISTS" точно так же падает, если объект
+        # уже MATERIALIZED VIEW ("... is not a view") — слепое исполнение
+        # ОБОИХ вариантов (как было раньше) гарантированно ловит одну из
+        # двух ошибок при любом реальном апгрейде версии схемы, где
+        # объект уже материализован (первый раз воспроизведено именно
+        # здесь — round28/29 либо создавали объект с нуля, либо не меняли
+        # SCHEMA_VERSION). Определяем фактический relkind и дропаем
+        # ТОЛЬКО подходящей командой; относится generic — включая случай
+        # "объекта ещё нет вообще" (relkind == '' → ничего не дропаем,
+        # CREATE ... IF NOT EXISTS ниже сам создаст).
+        kind = _relkind(view)
+        if kind == "v":
+            _run_psql(f"DROP VIEW IF EXISTS {view} CASCADE;")
+        elif kind == "m":
+            _run_psql(f"DROP MATERIALIZED VIEW IF EXISTS {view} CASCADE;")
     recreate_views(sql_path)
 
 
@@ -739,8 +749,9 @@ def _run_psql(sql: str) -> str:
 
 
 def refresh_materialized_view():
-    """REFRESH MATERIALIZED VIEW assessment_ready, levelsagg_ready
-    (round23, задача 2; levelsagg_ready добавлен round27, A1).
+    """REFRESH MATERIALIZED VIEW assessment_ready, levelsagg_ready,
+    assessment_ready_latest (round23, задача 2; levelsagg_ready
+    добавлен round27, A1; assessment_ready_latest — round30, блок B).
 
     Обычный REFRESH, не CONCURRENTLY: держит ACCESS EXCLUSIVE лок на время
     пересборки (замер на боевых данных VPS — секунды, не минуты), но не
@@ -758,9 +769,13 @@ def refresh_materialized_view():
     здесь же, той же доставкой, что и assessment_ready, ПОСЛЕ подмены
     _stage→боевые (agrifields к этому моменту уже боевая, свежая).
     """
-    logger.info("Обновляю материализованные представления assessment_ready, levelsagg_ready...")
+    logger.info("Обновляю материализованные представления assessment_ready, levelsagg_ready, assessment_ready_latest...")
     t0 = time.monotonic()
     _run_psql("REFRESH MATERIALIZED VIEW assessment_ready;")
+    # round30, блок B: assessment_ready_latest зависит от assessment_ready
+    # (SELECT DISTINCT ON поверх него) — REFRESH не каскадируется
+    # автоматически, обновляем явно и строго ПОСЛЕ базового представления.
+    _run_psql("REFRESH MATERIALIZED VIEW assessment_ready_latest;")
     _run_psql("REFRESH MATERIALIZED VIEW levelsagg_ready;")
     elapsed = time.monotonic() - t0
     logger.info(f"Представления обновлены за {elapsed:.2f}с.")

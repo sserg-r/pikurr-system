@@ -123,3 +123,76 @@ Execution Time: 20.9 / 20.9 / 21.1 / 21.2 / 21.6 мс
 для первой загрузки. Блок B выполняется.
 
 ---
+
+## Блок B. `assessment_ready_latest` — материализовано
+
+### B.1-B.2. Правки
+
+`PIKURR/src/sqlscripts/create_assessment_schema.sql`:
+`assessment_ready_latest` — теперь `CREATE MATERIALIZED VIEW IF NOT
+EXISTS` (тот же `SELECT DISTINCT ON (nr_user) * FROM assessment_ready
+ORDER BY nr_user, year DESC`, семантика не менялась), плюс
+`GIST`-индекс по `geom` (единственный реальный фильтр — блок A.1) и
+уникальный индекс по `nr_user`. `SCHEMA_VERSION = 3`, маркер
+`schema_version=3` на всех трёх материализованных объектах.
+
+`REPIKURR/deliver.py`: `SCHEMA_VERSION = 3`,
+`_VERSIONED_MATERIALIZED_VIEWS` теперь включает
+`assessment_ready_latest`; `refresh_materialized_view()` обновляет его
+явно, **после** `assessment_ready` (зависимость — `SELECT DISTINCT ON`
+поверх него, `REFRESH` не каскадируется автоматически).
+
+**Найден и исправлен реальный баг по ходу проверки** (не в задачах
+ТЗ, но заблокировал бы каждый следующий апгрейд версии схемы): миграция
+v2→v3 первой же попыткой упала — `ensure_assessment_schema()`
+безусловно выполняла `DROP VIEW IF EXISTS {view} CASCADE` **и**
+`DROP MATERIALIZED VIEW IF EXISTS {view} CASCADE` для каждого объекта
+из списка (правка round28, придуманная для случая "объект уже
+MATERIALIZED VIEW, ожидался VIEW"). Оказалось, что `IF EXISTS`
+защищает только от отсутствия ИМЕНИ, но не от несовпадения ТИПА в
+обе стороны: `DROP VIEW IF EXISTS x`, когда `x` уже `MATERIALIZED
+VIEW`, тоже падает (`"assessment_ready" is not a view`). Это
+единственный по-настоящему первый случай, когда в проде выполнялась
+миграция версии схемы для объекта, УЖЕ материализованного заранее
+(round28/29 либо создавали объекты с нуля, либо не поднимали
+`SCHEMA_VERSION`) — баг был в коде с round28, но ни разу не
+срабатывал. Исправлено: перед `DROP` определяется фактический
+`relkind` объекта (`_relkind()`, уже был в коде) — дропается только
+подходящей командой.
+
+### B.3. Проверка на эмуляторе
+
+1. **Миграция v2→v3**: эмулятор был на `schema_version=2`
+   (`assessment_ready_latest` — обычный `VIEW`, без версии).
+   Собран тестовый пакет с новым `create_assessment_schema.sql`
+   (`SCHEMA_VERSION=3`) поверх реальных данных, доставлен —
+   **успешно** (после фикса выше), `healthcheck` зелёный.
+   Фактически после доставки: все три объекта —
+   `relkind='m'` (materialized), `obj_description = 'schema_version=3'`.
+2. **Повторная доставка тем же (v3) пакетом** — `ok: true`,
+   `healthcheck` зелёный, **OID не изменились**
+   (`assessment_ready=127429`, `assessment_ready_latest=138151`,
+   `levelsagg_ready=148879` — до и после повторной доставки идентичны).
+3. **Пакет со старой схемой (`SCHEMA_VERSION=2`) после того, как БД
+   уже на v3** — **отказ** на шаге `check_schema_version`
+   (`SchemaVersionError: Пакет несёт SCHEMA_VERSION=2, боевая схема
+   уже на SCHEMA_VERSION=3...`), OID объектов **не изменились**
+   (проверено после попытки) — ничего не тронуто, как и задумано в
+   round29, блок A.4.
+
+### B.4. Эквивалентность содержимого
+
+Сравнение материализованного результата с прямым, честным пересчётом
+того же `SELECT DISTINCT ON` (эмулятор, реальные данные — 59209 строк
+`agrifields`, 55784 уникальных `nr_user` в `assessment_ready`):
+
+| | count |
+|---|---|
+| `assessment_ready_latest` (материализовано) | 55784 |
+| Прямой `SELECT DISTINCT ON (nr_user) ...` | 55784 |
+| Расхождений в множестве `(nr_user, year)` (`EXCEPT`) | **0** |
+
+**Подтверждено** полностью — содержимое идентично, число объектов и
+множество `(nr_user, year)` совпадают.
+
+---
