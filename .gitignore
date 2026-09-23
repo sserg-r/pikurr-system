@@ -61,6 +61,8 @@ REPIKURR/geoserver_data/security/role/default/roles.xml.orig
 REPIKURR/repikurr/node_modules/
 REPIKURR/repikurr/dist/
 REPIKURR/repikurr/build/
+# round34, блок B: зависимости дымового Playwright-сценария
+REPIKURR/tools/smoke/node_modules/
 
 # 5. ЧИСТИМ МУСОР (Даже в разрешенных папках)
 # Эти правила должны быть ниже разрешающих, чтобы перекрыть их
