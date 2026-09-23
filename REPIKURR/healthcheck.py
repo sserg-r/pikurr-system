@@ -126,6 +126,39 @@ def check_wfs(base_url: str, checks: list):
             f"атрибуты непустые (пример: {list(props.keys())[:5]})", checks)
 
 
+def check_error_path(base_url: str, checks: list):
+    """round30, C.3б: баг Caddy (`handle_response` без `copy_response`)
+    подменял ЛЮБОЙ не-200 ответ GeoServer синтетическим пустым `200` —
+    жил в проде незамеченным целый раунд именно потому, что ни один
+    контроль не заходил на заведомо несуществующий путь. Эта проверка
+    подтверждает факт, а не полагается на код: несуществующий путь
+    обязан вернуть НЕ `200` и НЕПУСТОЕ тело (настоящую ошибку от
+    GeoServer или самого Caddy), а не пустой `200 Content-Length: 0`."""
+    url = f"{base_url}/geoserver/nonexistent"
+    try:
+        resp = requests.get(url, timeout=15)
+    except requests.RequestException as e:
+        _check("error_path", False, f"запрос не выполнен: {e}", checks)
+        return
+
+    if resp.status_code == 200:
+        _check("error_path", False,
+                f"HTTP 200 на заведомо несуществующий путь — похоже на "
+                f"регрессию округа30 C.3б (пустой синтетический 200 вместо "
+                f"реальной ошибки); тело: {len(resp.content)} байт", checks)
+        return
+
+    if len(resp.content) == 0:
+        _check("error_path", False,
+                f"HTTP {resp.status_code}, но тело ПУСТОЕ — код не 200, но "
+                f"это всё ещё может быть синтетический ответ без реального "
+                f"содержимого", checks)
+        return
+
+    _check("error_path", True,
+            f"HTTP {resp.status_code}, тело непустое ({len(resp.content)} байт)", checks)
+
+
 def check_main_page(base_url: str, checks: list):
     try:
         resp = requests.get(base_url + "/", timeout=15)
@@ -225,6 +258,7 @@ def run_healthcheck(base_url: str) -> dict:
     checks: list = []
     check_wms(base_url, checks)
     check_wfs(base_url, checks)
+    check_error_path(base_url, checks)
     check_main_page(base_url, checks)
     static_data = check_year_district(base_url, checks)
     check_db_matches_static(static_data, checks)
