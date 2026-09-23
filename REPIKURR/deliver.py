@@ -1178,6 +1178,22 @@ def deliver(zip_path: Path, tracker: "_StepTracker", *,
         tracker.step = "refresh_materialized_view"
         refresh_seconds = refresh_materialized_view()
 
+        # 4б-2. Тайловый кэш GWC для векторных слоёв (round32, блок B4) —
+        # `_truncate_gwc_layer_if_cached` уже существовала для растровых
+        # сторов (round21, A2), но до этого раунда ни один слой не был
+        # зарегистрирован в GWC вообще, поэтому она была no-op для всех.
+        # После round32 B3 `fields_latest` и `image_assessment` реально
+        # кэшируются — без явной очистки после REFRESH клиент продолжил
+        # бы получать СТАРЫЕ тайлы из GWC даже после успешной доставки
+        # (тот же класс отказа, что и с индексом мозаики в round19/20).
+        # `fields` не регистрировался в GWC в этом раунде (не входил в
+        # разрешённый список слоёв блока B3) — вызов безопасен и для него
+        # (функция сама проверяет регистрацию и не делает ничего лишнего).
+        tracker.step = "truncate_gwc_vector_layers"
+        _gwc_auth = (GEOSERVER_USER, GEOSERVER_PASSWORD)
+        for _vector_layer in ("fields_latest", "fields"):
+            _truncate_gwc_layer_if_cached(_vector_layer, _gwc_auth)
+
         # 4в. Статика для списка годов/районов (round23, задача 1) — читает
         # уже обновлённое представление.
         tracker.step = "write_year_district_lookup"
