@@ -306,4 +306,5 @@ docker-compose/Caddyfile/nginx.local.conf/systemd-юнитов на VPS ИЛИ �
 сохраняется (файловая, в `data_dir/gwc/gwc-layers`), квота диска — нет
 (откатывается к дефолтным 20 GiB). После любой перезагрузки VPS —
 проверить `curl -u admin:$GEOSERVER_ADMIN_PASSWORD http://localhost:8090/geoserver/gwc/rest/diskquota.xml`
-и переприменить 2 GiB при необходимости (XML — `docs/round33-reboot-incident.md`, блок A3).
+и переприменить 2 GiB при необходимости:
+`curl -u admin:$GEOSERVER_ADMIN_PASSWORD -XPUT -H 'Content-Type: text/xml' -d @REPIKURR/tools/gwc_diskquota_2gib.xml http://localhost:8090/geoserver/gwc/rest/diskquota.xml`.

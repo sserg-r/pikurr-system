@@ -184,9 +184,13 @@ zone в `MapView.jsx`, введённая round32 блоком C, не связ�
    `docker-compose.server.yml`, контейнер `pikurr_srv_react`.
 5. **Восстановлена квота диска GWC** (2 GiB, PUT
    `/geoserver/gwc/rest/diskquota.xml`, тот же XML, что и в round32).
-   Откат: `curl -u admin:$GEOSERVER_ADMIN_PASSWORD -XPUT ... geowebcache-diskquota.xml` со старым содержимым (20 GiB) — сохранён в
-   `/tmp/diskquota_2gib.xml` на VPS для повторного применения, если
-   потребуется откатить к 2 GiB после будущих рестартов.
+   XML перенесён в репозиторий —
+   `REPIKURR/tools/gwc_diskquota_2gib.xml` (round33, session-restart:
+   раньше жил только в `/tmp` на VPS и не пережил бы даже эту
+   перезагрузку). Применять заново после каждого перезапуска
+   GeoServer (см. блок B2 — квота не персистентна). Откат к дефолту —
+   не нужен явный XML: `<globalQuota><value>20</value><units>GiB</units></globalQuota>`
+   вместо `2`/`GiB` в том же PUT-запросе.
 
 **Критерий приёмки — по содержимому**:
 - главная страница: подтверждено фактом в реальном браузере

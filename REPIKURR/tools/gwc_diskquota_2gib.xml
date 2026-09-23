@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  round32, блок B3: ограничение дискового кэша GWC (дефолт GeoServer —
+  ~20 GiB, слишком много для дисков стенда/VPS этого проекта).
+  round33, блок A2/A3: конфигурация тайловых слоёв GWC переживает
+  перезапуск GeoServer (файлы в data_dir/gwc/gwc-layers), а ЭТА квота —
+  НЕТ (откатывается к дефолтным 20 GiB после каждого перезапуска
+  GeoServer) — применять заново после любой перезагрузки VPS/эмулятора,
+  см. docs/deploy-repikurr-vps.md, раздел 8.
+
+  Применение:
+    curl -u admin:$GEOSERVER_ADMIN_PASSWORD -XPUT -H 'Content-Type: text/xml' \
+      -d @REPIKURR/tools/gwc_diskquota_2gib.xml \
+      http://localhost:8090/geoserver/gwc/rest/diskquota.xml
+
+  Проверка:
+    curl -u admin:$GEOSERVER_ADMIN_PASSWORD \
+      http://localhost:8090/geoserver/gwc/rest/diskquota.xml
+    (ожидается globalQuota value=2, units=GiB — GET возвращает
+    <id>/<bytes> вместо <value>/<units>, это нормально для чтения, но
+    PUT с этой GET-схемой упадёт с IllegalArgumentException — использовать
+    именно этот файл, не то, что вернул GET)
+-->
+<org.geowebcache.diskquota.DiskQuotaConfig>
+  <enabled>true</enabled>
+  <cacheCleanUpFrequency>60</cacheCleanUpFrequency>
+  <cacheCleanUpUnits>SECONDS</cacheCleanUpUnits>
+  <maxConcurrentCleanUps>2</maxConcurrentCleanUps>
+  <globalExpirationPolicyName>LFU</globalExpirationPolicyName>
+  <globalQuota><value>2</value><units>GiB</units></globalQuota>
+  <quotaStore>HSQL</quotaStore>
+</org.geowebcache.diskquota.DiskQuotaConfig>
