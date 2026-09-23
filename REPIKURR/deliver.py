@@ -753,15 +753,19 @@ def refresh_materialized_view():
     assessment_ready_latest (round23, задача 2; levelsagg_ready
     добавлен round27, A1; assessment_ready_latest — round30, блок B).
 
-    Обычный REFRESH, не CONCURRENTLY: держит ACCESS EXCLUSIVE лок на время
-    пересборки (замер на боевых данных VPS — секунды, не минуты), но не
-    требует второй копии данных на диске и самого механизма CONCURRENTLY
-    (который сам медленнее обычного REFRESH). На витрине с редкими
-    доставками (не чаще нескольких раз в год) и невысоким постоянным
-    трафиком короткая блокировка на чтение не обосновывает эту сложность —
-    уникальный индекс (nr_user, year)/(usname, usern_co, rn) уже есть в
-    схеме, so при необходимости перейти на CONCURRENTLY в будущем — чисто
-    техническая правка.
+    round31, блок D: переведено на `REFRESH ... CONCURRENTLY` —
+    измерено фактом на реальной доставке VPS (round31, блок D.1):
+    обычный `REFRESH` держит `ACCESS EXCLUSIVE`, и клиентские запросы к
+    `fields_latest` (через `assessment_ready_latest`) реально
+    недоступны/отвечают ошибкой ~20с во время доставки — нарушает
+    инвариант round26 («доставка без окна недоступности»).
+    `CONCURRENTLY` строит новую копию данных рядом со старой и
+    подменяет их одной короткой блокировкой в конце — читатели все
+    это время видят СТАРЫЕ, но валидные данные, не блокировку и не
+    ошибку. Требует уникального индекса на каждом представлении —
+    подтверждено фактом для всех трёх (round31, блок D.2). Не может
+    выполняться внутри транзакционного блока — здесь не проблема,
+    каждый `_run_psql()` вызов — своё, отдельное соединение.
 
     round27, A1: levelsagg_ready заменил прямое чтение featuretype
     `levelsagg` из боевой agrifields (round26, B2: блокировался на всё
@@ -769,16 +773,16 @@ def refresh_materialized_view():
     здесь же, той же доставкой, что и assessment_ready, ПОСЛЕ подмены
     _stage→боевые (agrifields к этому моменту уже боевая, свежая).
     """
-    logger.info("Обновляю материализованные представления assessment_ready, levelsagg_ready, assessment_ready_latest...")
+    logger.info("Обновляю материализованные представления (CONCURRENTLY) assessment_ready, levelsagg_ready, assessment_ready_latest...")
     t0 = time.monotonic()
-    _run_psql("REFRESH MATERIALIZED VIEW assessment_ready;")
+    _run_psql("REFRESH MATERIALIZED VIEW CONCURRENTLY assessment_ready;")
     # round30, блок B: assessment_ready_latest зависит от assessment_ready
     # (SELECT DISTINCT ON поверх него) — REFRESH не каскадируется
     # автоматически, обновляем явно и строго ПОСЛЕ базового представления.
-    _run_psql("REFRESH MATERIALIZED VIEW assessment_ready_latest;")
-    _run_psql("REFRESH MATERIALIZED VIEW levelsagg_ready;")
+    _run_psql("REFRESH MATERIALIZED VIEW CONCURRENTLY assessment_ready_latest;")
+    _run_psql("REFRESH MATERIALIZED VIEW CONCURRENTLY levelsagg_ready;")
     elapsed = time.monotonic() - t0
-    logger.info(f"Представления обновлены за {elapsed:.2f}с.")
+    logger.info(f"Представления обновлены (CONCURRENTLY) за {elapsed:.2f}с.")
     return elapsed
 
 
