@@ -814,8 +814,18 @@ def write_year_district_lookup():
             years.append(year)
         districts_by_year[year].append(district)
 
+    # round32, блок C: `dataVersion` — метка последней доставки, меняется
+    # ТОЛЬКО при доставке (не при каждой загрузке страницы, в отличие от
+    # прежнего `time=Date.now()` на фронтенде). Используется фронтендом
+    # как параметр URL тайла вместо случайного cache-buster — между
+    # доставками URL стабилен (кэшируется браузером и GWC), после
+    # доставки меняется (гарантирует свежие тайлы, round29 A6).
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {"years": sorted(years), "districtsByYear": districts_by_year}
+    payload = {
+        "years": sorted(years),
+        "districtsByYear": districts_by_year,
+        "dataVersion": datetime.now().strftime("%Y%m%d%H%M%S"),
+    }
     path = STATIC_DIR / "year_district.json"
     tmp_path = path.with_suffix(".json.tmp")
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False))

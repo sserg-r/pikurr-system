@@ -1,6 +1,6 @@
 import 'leaflet/dist/leaflet.css'
 import { MapContainer, TileLayer, WMSTileLayer, ZoomControl, Popup, useMap, useMapEvents } from 'react-leaflet'
-import { WMS_BASE_URL } from '../constants'
+import { WMS_BASE_URL, WMS_GWC_BASE_URL, GWC_CACHED_LAYERS } from '../constants'
 import { useEffect, useMemo, useState } from 'react'
 import './MapView.css'
 
@@ -166,7 +166,7 @@ function CoordBar({ coords }) {
 }
 
 /* ---- MapView ---- */
-export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMosaic, selectedYear, maxYear }) {
+export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMosaic, selectedYear, maxYear, dataVersion }) {
   const initialCenter = useMemo(() => [55.2, 29.6], [])
   // round29, блок C: раньше cacheBuster (и вместе с ним весь параметр
   // `time` в URL тайла) существовал ТОЛЬКО когда был активен CQL-фильтр
@@ -176,16 +176,34 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
   // отсутствие `&time=<epoch>` у `fields_latest` даёт один случайный
   // HTTP 503 в прошлом навсегда "залипнуть" в HTTP-кэше браузера для
   // этого URL — `fields` той же уязвимости не подвержен ровно потому,
-  // что кэш-бастер у него уже был. Единый механизм для обоих слоёв:
-  // cacheBuster пересчитывается при каждом изменении cqlExpr (включая
-  // переход в/из "фильтра нет"), а не только когда фильтр ЕСТЬ.
-  const cacheBuster   = useMemo(() => Date.now(), [cqlExpr])
+  // что кэш-бастер у него уже был. Единый механизм для обоих слоёв.
+  //
+  // round32, блок C: сам `Date.now()` был ПРИЧИНОЙ, по которой ни браузер,
+  // ни GWC не могли ничего закэшировать — URL каждого тайла был уникален
+  // на каждую загрузку страницы, а не только на каждую доставку данных.
+  // `dataVersion` (из `/static/year_district.json`, пишется deliver.py
+  // ТОЛЬКО при доставке) даёт то же самое разрешение задачи round29 A6
+  // (после доставки URL меняется — старые тайлы не залипают), но НЕ
+  // меняет URL между доставками — значит, кэш браузера и GWC реально
+  // работают. Пока `dataVersion` ещё не загрузился (самый первый рендер
+  // до ответа `/static/year_district.json`) — используем 'loading' как
+  // временное значение, а не `Date.now()`, чтобы не создавать одноразовый
+  // уникальный URL даже на долю секунды.
+  const cacheBuster   = dataVersion || 'loading'
   const [clickCoords, setClickCoords] = useState(null)
 
   // Мемоизируем params чтобы WMSTileLayer не пересоздавался при посторонних ре-рендерах
   const wmsVectorParams = useMemo(
-    () => ({ ...(cqlExpr ? { CQL_FILTER: cqlExpr } : {}), time: cacheBuster }),
-    [cqlExpr, cacheBuster]
+    () => ({
+      ...(cqlExpr ? { CQL_FILTER: cqlExpr } : {}),
+      time: cacheBuster,
+      ...(vectorIsCached ? { tiled: true } : {}),
+    }),
+    [cqlExpr, cacheBuster, vectorIsCached]
+  )
+  const wmsRasterParams = useMemo(
+    () => (rasterIsCached ? { tiled: true } : {}),
+    [rasterIsCached]
   )
 
   const vectorLayer = selectedYear ? 'pikurr:fields' : 'pikurr:fields_latest'
@@ -193,6 +211,18 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
   const rasterLayer = (!effectiveYear || effectiveYear === maxYear)
     ? 'image_assessment'
     : `image_assessment_${effectiveYear}`
+
+  // round32, блок C.3: обычный `/geoserver/pikurr/wms` НЕ проксируется
+  // через GWC даже с `tiled=true` (проверено фактом, блок B) — кэшируемые
+  // слои идут через отдельный эндпоинт `/geoserver/gwc/service/wms` с
+  // `tiled=true`; остальные (fields с CQL_FILTER, историчные растры) —
+  // как раньше, напрямую.
+  const vectorFqName = `pikurr:${vectorLayer.replace(/^pikurr:/, '')}`
+  const rasterFqName = `pikurr:${rasterLayer}`
+  const vectorIsCached = GWC_CACHED_LAYERS.has(vectorFqName)
+  const rasterIsCached = GWC_CACHED_LAYERS.has(rasterFqName)
+  const vectorWmsUrl = vectorIsCached ? WMS_GWC_BASE_URL : WMS_BASE_URL
+  const rasterWmsUrl = rasterIsCached ? WMS_GWC_BASE_URL : WMS_BASE_URL
 
   return (
     <div style={{ position: 'relative', height: '100%', width: '100%' }}>
@@ -213,12 +243,13 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
         )}
         {showMosaic && (
           <WMSTileLayer key={`mosaic-${rasterLayer}`} zIndex={300}
-            url={WMS_BASE_URL} version="1.1.1"
-            layers={rasterLayer} format="image/png" transparent />
+            url={rasterWmsUrl} version="1.1.1"
+            layers={rasterLayer} format="image/png" transparent
+            params={wmsRasterParams} />
         )}
         {showVectors && (
           <WMSTileLayer key={vectorLayer} zIndex={500}
-            url={WMS_BASE_URL} version="1.1.1"
+            url={vectorWmsUrl} version="1.1.1"
             layers={vectorLayer} format="image/png" transparent
             params={wmsVectorParams} />
         )}

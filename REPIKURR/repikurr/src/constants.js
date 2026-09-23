@@ -24,3 +24,15 @@ export const WMS_BASE_URL = `${GEOSERVER_URL}/geoserver/pikurr/wms`;
 export const WFS_BASE_URL = `${GEOSERVER_URL}/geoserver/wfs`;
 export const WPS_BASE_URL = `${GEOSERVER_URL}/geoserver/wps`;
 
+// round32, блок C.3: обычный `/geoserver/pikurr/wms` НЕ проксируется
+// через GeoWebCache даже с `tiled=true` — проверено фактом (заголовок
+// `geowebcache-cache-result` отсутствует на этом пути в любом случае).
+// Кэш GWC реально включается только через отдельный эндпоинт
+// `/geoserver/gwc/service/wms` (round32, блок B). Используется только
+// для слоёв, реально зарегистрированных в GWC (`fields_latest`,
+// `image_assessment` — без CQL_FILTER, единственные два слоя из блока
+// B3); `fields` (историчный год, CQL_FILTER) и `image_assessment_<year>`
+// не в GWC — идут через обычный эндпоинт, как раньше.
+export const WMS_GWC_BASE_URL = `${GEOSERVER_URL}/geoserver/gwc/service/wms`;
+export const GWC_CACHED_LAYERS = new Set(['pikurr:fields_latest', 'pikurr:image_assessment']);
+

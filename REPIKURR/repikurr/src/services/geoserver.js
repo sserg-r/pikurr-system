@@ -67,7 +67,11 @@ export async function loadYearDistrictData() {
     map[year] = new Set(districts)
   }
   const years = (json.years || []).slice().sort((a, b) => a - b)
-  return { years, districtsByYear: map }
+  // round32, блок C: `dataVersion` — метка последней доставки
+  // (deliver.py, write_year_district_lookup()), меняется ТОЛЬКО при
+  // доставке. Используется вместо Date.now() как параметр URL тайла —
+  // между доставками URL стабилен (кэшируется браузером/GWC).
+  return { years, districtsByYear: map, dataVersion: json.dataVersion || null }
 }
 
 export function getLegendUrl(layer) {

@@ -20,6 +20,9 @@ function App() {
   const [selectedYear, setSelectedYear] = useState(null)
   const [districtsByYear, setDistrictsByYear] = useState({})
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  // round32, блок C: версия данных последней доставки (стабильна между
+  // доставками) — заменяет случайный cache-buster на фронтенде.
+  const [dataVersion, setDataVersion] = useState(null)
 
   async function handleZoomTo(nrUser) {
     try {
@@ -88,9 +91,10 @@ function App() {
   // (селектор года в Sidebar, handleReset ниже).
   if (!availableYears.length) {
     loadYearDistrictData()
-      .then(({ years, districtsByYear: dby }) => {
+      .then(({ years, districtsByYear: dby, dataVersion: dv }) => {
         setAvailableYears(years)
         setDistrictsByYear(dby)
+        setDataVersion(dv)
       })
       .catch(e => console.error(e))
   }
@@ -186,6 +190,7 @@ function App() {
           showVectors={showVectors}
           showMosaic={showMosaic}
           selectedYear={selectedYear}
+          dataVersion={dataVersion}
         />
         {showMosaic && (
           <div style={{ position: 'absolute', right: 0, bottom: 32 }}>
