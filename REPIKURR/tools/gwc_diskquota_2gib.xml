@@ -8,20 +8,44 @@
   GeoServer) — применять заново после любой перезагрузки VPS/эмулятора,
   см. docs/deploy-repikurr-vps.md, раздел 8.
 
-  Применение:
-    curl -u admin:$GEOSERVER_ADMIN_PASSWORD -XPUT -H 'Content-Type: text/xml' \
-      -d @REPIKURR/tools/gwc_diskquota_2gib.xml \
-      http://localhost:8090/geoserver/gwc/rest/diskquota.xml
+  round34, блок D1: установлено фактом, ПОЧЕМУ REST-применение не
+  переживает рестарт — REST PUT меняет квоту только в рантайме
+  (немедленно видна через GET на /diskquota.xml), но НИКОГДА не
+  записывает её в файл на диске
+  (geoserver_data/gwc/geowebcache-diskquota.xml остаётся со старым
+  значением сразу после успешного PUT, до какого-либо рестарта). При
+  старте GeoServer читает именно этот файл и переопределяет рантайм-
+  значение обратно. Устойчивое решение — писать файл НАПРЯМУЮ (ниже),
+  не полагаться на REST для долгосрочного эффекта. REST-способ (были
+  инструкции ниже раньше) оставлен как вариант для разового
+  runtime-изменения без перезапуска, но для «пережить рестарт» —
+  бесполезен, не использовать для этой цели.
 
-  Проверка:
+  Устойчивое применение (проверено фактом раунда 34 — квота осталась
+  2 GiB после `docker compose restart geoserver`, и на эмуляторе, и на
+  VPS): скопировать этот файл НАПРЯМУЮ поверх
+  geoserver_data/gwc/geowebcache-diskquota.xml (схема отличается от
+  REST — корневой элемент <gwcQuotaConfiguration>, не
+  <org.geowebcache.diskquota.DiskQuotaConfig>, ниже это исправлено):
+
+    cp geoserver_data/gwc/geowebcache-diskquota.xml \
+       geoserver_data/gwc/geowebcache-diskquota.xml.bak_preN  # бэкап
+    cp REPIKURR/tools/gwc_diskquota_2gib.xml \
+       geoserver_data/gwc/geowebcache-diskquota.xml
+    docker compose -f docker-compose.<vps|server>.yml restart geoserver
+
+  Откат: вернуть сохранённый *.bak_preN обратно тем же путём и снова
+  restart geoserver.
+
+  Проверка (после restart, дать GeoServer подняться — 30-40с на VPS,
+  ~10с на эмуляторе):
     curl -u admin:$GEOSERVER_ADMIN_PASSWORD \
       http://localhost:8090/geoserver/gwc/rest/diskquota.xml
-    (ожидается globalQuota value=2, units=GiB — GET возвращает
-    <id>/<bytes> вместо <value>/<units>, это нормально для чтения, но
-    PUT с этой GET-схемой упадёт с IllegalArgumentException — использовать
-    именно этот файл, не то, что вернул GET)
+    (ожидается <bytes>2147483648</bytes> — это 2 GiB в байтах, REST
+    GET всегда возвращает схему с <bytes>, а не <value>/<units>, даже
+    когда сам файл на диске в других единицах)
 -->
-<org.geowebcache.diskquota.DiskQuotaConfig>
+<gwcQuotaConfiguration>
   <enabled>true</enabled>
   <cacheCleanUpFrequency>60</cacheCleanUpFrequency>
   <cacheCleanUpUnits>SECONDS</cacheCleanUpUnits>
@@ -29,4 +53,4 @@
   <globalExpirationPolicyName>LFU</globalExpirationPolicyName>
   <globalQuota><value>2</value><units>GiB</units></globalQuota>
   <quotaStore>HSQL</quotaStore>
-</org.geowebcache.diskquota.DiskQuotaConfig>
+</gwcQuotaConfiguration>
