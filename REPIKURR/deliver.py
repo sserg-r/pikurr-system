@@ -80,6 +80,39 @@ GEOSERVER_PASSWORD = _required_env("GEOSERVER_PASSWORD")
 GEOSERVER_WORKSPACE = os.getenv("GEOSERVER_WORKSPACE", "pikurr")
 GEOSERVER_COVERAGESTORE = os.getenv("GEOSERVER_COVERAGESTORE", "image_assessment")
 
+# round35, блок C: прогрев кэша GWC при доставке. Диапазон и параллелизм —
+# по оценке round35 C1 (docs/round35-seeding.md): z9-14 покрывает
+# наблюдаемый по факту типичный диапазон использования (z9-11 из дымового
+# сценария, +3 уровня запаса) и укладывается в квоту диска (2 GiB — ≈1.14
+# GiB для обоих слоёв на z9-14, z15 один уже превышает квоту). Потоков — 2
+# (столько же, сколько vCPU на VPS, "не выжрать целиком" — round35 C1).
+#
+# round35, блок C2: НАЙДЕНА, НЕ РЕШЕНА проблема надёжности — на эмуляторе
+# засев ОБОИХ слоёв (по отдельности, в разных прогонах) стабильно
+# зависал примерно на 50% прогресса на много минут при CPU GeoServer
+# около 0% (не перегрузка — похоже на внутреннюю блокировку GWC,
+# возможно конфликт с периодическим GWC cacheCleanUp диск-квоты,
+# cacheCleanUpFrequency=60с, гипотеза не подтверждена отдельным
+# экспериментом). Предохранитель `GWC_SEED_MAX_WAIT_S` сработал
+# корректно (доставка не подвисла бесконечно), но реального успешного
+# завершения засева на полном диапазоне z9-14 в этом раунде добиться не
+# удалось. **Дефолт — ВЫКЛЮЧЕНО**, пока причина не найдена и не
+# исправлена (docs/round35-seeding.md, C2/C3) — включать явным
+# `GWC_SEED_ENABLED=true` только для контролируемых экспериментов, НЕ
+# на постоянной основе на VPS.
+GWC_SEED_ENABLED = os.getenv("GWC_SEED_ENABLED", "false").lower() not in ("0", "false", "no")
+GWC_SEED_LAYERS = ("fields_latest", "image_assessment")
+GWC_SEED_ZOOM_START = int(os.getenv("GWC_SEED_ZOOM_START", "9"))
+GWC_SEED_ZOOM_STOP = int(os.getenv("GWC_SEED_ZOOM_STOP", "14"))
+GWC_SEED_THREAD_COUNT = int(os.getenv("GWC_SEED_THREAD_COUNT", "2"))
+# round35, C2: пока не найдена причина зависания на ~50% (см. выше),
+# наблюдалось только "быстро закончилось (~100-200с)" или "зависло
+# насмерть, не восстанавливается" — ни одного случая "медленно, но
+# доехало". 300с — достаточно щедро для наблюдённого успешного темпа
+# (десятки тысяч тайлов за <2 мин), не имеет смысла ждать дольше в
+# расчёте на самовосстановление, которого пока не наблюдалось ни разу.
+GWC_SEED_MAX_WAIT_S = int(os.getenv("GWC_SEED_MAX_WAIT_S", "300"))
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 GEODATA_DIR = SCRIPT_DIR / "data" / "geodata"
 STATUS_DIR = SCRIPT_DIR / "status"
@@ -936,6 +969,105 @@ def _truncate_gwc_layer_if_cached(store_name: str, auth: tuple):
         logger.warning(f"  [{store_name}] masstruncate не выполнен: {e}")
 
 
+def _seed_gwc_layer(store_name: str, auth: tuple) -> dict:
+    """Засевает тайловый кэш GWC для одного слоя (round35, блок C2).
+
+    Асинхронный REST-запрос (`type=seed`) — GWC сразу возвращает 200 и
+    сеет в фоне; прогресс опрашивается через GET того же URL (`.json`)
+    до тех пор, пока список активных задач не опустеет или не истечёт
+    `GWC_SEED_MAX_WAIT_S` (предохранитель от зависшей доставки, не
+    оценка реального времени — реальное время меряется отдельно, C2/C3
+    отчёта). Ошибка засева НЕ бросает исключение — возвращает
+    {"ok": False, ...}, вызывающий код обязан не останавливать доставку
+    (правило ТЗ: неудачный засев не должен оставлять витрину без
+    данных — без засева тайлы просто рендерятся по требованию, как до
+    этого раунда).
+    """
+    layer_name = f"{GEOSERVER_WORKSPACE}:{store_name}"
+    seed_url = f"{GEOSERVER_URL}/gwc/rest/seed/{layer_name}.json"
+
+    check_url = f"{GEOSERVER_URL}/gwc/rest/layers/{layer_name}.xml"
+    try:
+        resp = requests.get(check_url, auth=auth, timeout=15)
+    except requests.RequestException as e:
+        return {"ok": False, "layer": store_name, "error": f"проверка регистрации в GWC не выполнена: {e}"}
+    if resp.status_code != 200:
+        return {"ok": False, "layer": store_name, "error": f"слой не зарегистрирован в GWC ({resp.status_code}) — засев пропущен"}
+
+    body = {
+        "seedRequest": {
+            "name": layer_name,
+            "gridSetId": "EPSG:900913",
+            "zoomStart": GWC_SEED_ZOOM_START,
+            "zoomStop": GWC_SEED_ZOOM_STOP,
+            "format": "image/png",
+            "type": "seed",
+            "threadCount": GWC_SEED_THREAD_COUNT,
+        }
+    }
+    t0 = time.monotonic()
+    try:
+        resp = requests.post(seed_url, auth=auth, json=body, timeout=30)
+    except requests.RequestException as e:
+        return {"ok": False, "layer": store_name, "error": f"запуск засева не выполнен: {e}"}
+    if resp.status_code not in (200, 201, 202):
+        return {"ok": False, "layer": store_name, "error": f"POST seed вернул {resp.status_code}: {resp.text[:200]}"}
+
+    logger.info(f"  [{store_name}] засев GWC запущен (z{GWC_SEED_ZOOM_START}-{GWC_SEED_ZOOM_STOP}, {GWC_SEED_THREAD_COUNT} потока)")
+
+    while time.monotonic() - t0 < GWC_SEED_MAX_WAIT_S:
+        time.sleep(15)
+        try:
+            status_resp = requests.get(seed_url, auth=auth, timeout=15)
+        except requests.RequestException as e:
+            logger.warning(f"  [{store_name}] опрос статуса засева не выполнен: {e}")
+            continue
+        if status_resp.status_code != 200:
+            continue
+        try:
+            tasks = status_resp.json()
+        except ValueError:
+            continue
+        # round35, C2: реальная схема ответа (проверено фактом запросом
+        # напрямую к REST во время работающего засева) — ОБЪЕКТ с ключом
+        # "long-array-array", НЕ голый список: {"long-array-array": [[tilesDone,
+        # tilesTotal, tilesTotalDup, taskId, status], ...]}. Первая версия этой
+        # функции проверяла `isinstance(tasks, list)`, что для объекта всегда
+        # False — засев считался завершённым на первой же секунде опроса, хотя
+        # реально работал ещё много минут (найдено этим же прогоном: объём на
+        # диске после "завершения" за 5с оказался в разы меньше расчётного).
+        active = tasks.get("long-array-array") if isinstance(tasks, dict) else None
+        if not active:
+            elapsed = time.monotonic() - t0
+            logger.info(f"  [{store_name}] засев GWC завершён за {elapsed:.1f}с")
+            return {"ok": True, "layer": store_name, "seconds": round(elapsed, 1)}
+        done = sum(t[0] for t in active)
+        total = sum(t[1] for t in active)
+        logger.info(f"  [{store_name}] засев GWC: {done}/{total} тайлов ({time.monotonic()-t0:.0f}с)")
+
+    elapsed = time.monotonic() - t0
+    logger.warning(f"  [{store_name}] засев GWC не завершился за {GWC_SEED_MAX_WAIT_S}с — оставлен фоном, доставка продолжается")
+    return {"ok": False, "layer": store_name, "error": f"не завершился за {GWC_SEED_MAX_WAIT_S}с (оставлен фоном)", "seconds": round(elapsed, 1)}
+
+
+def seed_gwc_cache(auth: tuple) -> dict:
+    """Засевает оба кэшируемых слоя (round35, блок C2). Обёртка верхнего
+    уровня: перехватывает любое исключение — засев принципиально
+    некритичен для успеха доставки (см. docstring `_seed_gwc_layer`)."""
+    if not GWC_SEED_ENABLED:
+        logger.info("Засев GWC отключён (GWC_SEED_ENABLED=false) — пропущен")
+        return {"enabled": False}
+
+    results = {}
+    for layer in GWC_SEED_LAYERS:
+        try:
+            results[layer] = _seed_gwc_layer(layer, auth)
+        except Exception as e:  # pragma: no cover — защита от неучтённого исключения
+            logger.warning(f"  [{layer}] засев упал с исключением (не останавливает доставку): {e}")
+            results[layer] = {"ok": False, "layer": layer, "error": str(e)}
+    return {"enabled": True, "layers": results}
+
+
 def _reload_one_store(store_name: str, year: int, auth: tuple):
     """Обновляет один ImageMosaic-стор: URL → пересборка индекса → очистка GWC → nativeCoverageName."""
     base = (
@@ -1213,6 +1345,17 @@ def deliver(zip_path: Path, tracker: "_StepTracker", *,
         tracker.step = "reload_geoserver"
         granules_after = reload_geoserver(rasters_by_year)
 
+        # 5б. Прогрев кэша GWC (round35, блок C2) — СТРОГО после truncate
+        # (4б-2, выше) и после reload_geoserver (свежие гранулы растра уже
+        # подхвачены) — иначе засев зафиксировал бы в кэше устаревшие
+        # тайлы, тот же класс отказа, что был причиной ввести truncate в
+        # round32. Некритичен: неудача (таймаут, GWC недоступен) не
+        # прерывает доставку и не откатывает уже применённые изменения —
+        # витрина просто продолжит рендерить тайлы по требованию, как до
+        # этого раунда (`seed_gwc_cache` сама ловит все исключения).
+        tracker.step = "seed_gwc_cache"
+        seed_result = seed_gwc_cache(_gwc_auth)
+
         # 6. Проверка по содержимому (round25, блок B5) — тот же критерий,
         # что и весь этот раунд: тело ответа, не код. Не падает саму
         # доставку (пакет уже применён к БД/GeoServer) — только пишет
@@ -1233,6 +1376,7 @@ def deliver(zip_path: Path, tracker: "_StepTracker", *,
     return {
         "granules_after": granules_after,
         "refresh_seconds": round(refresh_seconds, 2),
+        "seed_gwc_cache": seed_result,
         "healthcheck": healthcheck_result,
     }
 
@@ -1261,7 +1405,8 @@ def write_status(zip_name: str, started_at: datetime, finished_at: datetime,
                   ok: bool, step_failed: str | None = None,
                   error: str | None = None, granules_after: int | None = None,
                   refresh_seconds: float | None = None,
-                  healthcheck: dict | None = None):
+                  healthcheck: dict | None = None,
+                  seed_gwc_cache: dict | None = None):
     """Пишет статус доставки, который PushTask опрашивает по ssh (round19: до
     этого отправляющая сторона не знала, дошла ли доставка до конца).
     Пишется всегда — и при успехе, и при падении на любом шаге."""
@@ -1281,6 +1426,10 @@ def write_status(zip_name: str, started_at: datetime, finished_at: datetime,
         # round25, блок B5: результат healthcheck.py — проверка по
         # содержимому ответа, не по коду.
         "healthcheck": healthcheck,
+        # round35, блок C2: результат прогрева кэша GWC (None, если засев
+        # отключён/не добежал до записи статуса — сама доставка это не
+        # останавливает, см. seed_gwc_cache()).
+        "seed_gwc_cache": seed_gwc_cache,
     }
     path = STATUS_DIR / f"{zip_name}.json"
     tmp_path = path.with_suffix(".json.tmp")
@@ -1433,12 +1582,14 @@ def main():
     signal.signal(signal.SIGINT, _handle_signal)
 
     healthcheck_result = None
+    seed_result = None
     try:
         result = deliver(zip_path, tracker, shrink_threshold=args.shrink_threshold,
                           allow_shrink=args.allow_shrink)
         granules_after = result.get("granules_after")
         refresh_seconds = result.get("refresh_seconds")
         healthcheck_result = result.get("healthcheck")
+        seed_result = result.get("seed_gwc_cache")
         ok = True
     except Exception as e:
         error_msg = str(e)
@@ -1451,6 +1602,7 @@ def main():
             error=error_msg, granules_after=granules_after,
             refresh_seconds=refresh_seconds,
             healthcheck=healthcheck_result,
+            seed_gwc_cache=seed_result,
         )
 
     if not ok:
