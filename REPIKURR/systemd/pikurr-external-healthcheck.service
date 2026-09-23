@@ -1,0 +1,9 @@
+[Unit]
+Description=PIKURR внешний healthcheck витрины (round33, блок D) — с эмулятора против VPS
+Documentation=https://github.com/sserg-r/PIKURR_REFACTOR
+
+[Service]
+Type=oneshot
+User=user
+WorkingDirectory=/home/user/repikurr
+ExecStart=/bin/bash /home/user/repikurr/external_healthcheck.sh

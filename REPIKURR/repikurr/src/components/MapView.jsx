@@ -1,7 +1,7 @@
 import 'leaflet/dist/leaflet.css'
-import { MapContainer, TileLayer, WMSTileLayer, ZoomControl, Popup, useMap, useMapEvents } from 'react-leaflet'
+import { MapContainer, TileLayer, WMSTileLayer, ZoomControl, AttributionControl, Popup, useMap, useMapEvents } from 'react-leaflet'
 import { WMS_BASE_URL, WMS_GWC_BASE_URL, GWC_CACHED_LAYERS } from '../constants'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './MapView.css'
 
 /* ---- FitBounds ---- */
@@ -210,6 +210,31 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
   const vectorWmsUrl = vectorIsCached ? WMS_GWC_BASE_URL : WMS_BASE_URL
   const rasterWmsUrl = rasterIsCached ? WMS_GWC_BASE_URL : WMS_BASE_URL
 
+  // round33, блок C.1: недоступность GeoServer (весь бэкенд лежит, а не
+  // просто один тайл) раньше была не видна пользователю — сломанные тайлы
+  // молча не грузились. Считаем ошибки тайлов слоя данных за короткое
+  // окно; при их накоплении показываем баннер поверх карты (сама карта —
+  // базовая подложка OSM/Esri — продолжает работать, т.к. не зависит от
+  // GeoServer). Retry — сброс счётчика и перезапрос через смену key.
+  const [tileErrorBanner, setTileErrorBanner] = useState(false)
+  const [reloadNonce, setReloadNonce] = useState(0)
+  const tileErrorCountRef = useRef(0)
+  const tileErrorWindowRef = useRef(0)
+  const handleTileError = () => {
+    const now = Date.now()
+    if (now - tileErrorWindowRef.current > 5000) {
+      tileErrorWindowRef.current = now
+      tileErrorCountRef.current = 0
+    }
+    tileErrorCountRef.current += 1
+    if (tileErrorCountRef.current >= 3) setTileErrorBanner(true)
+  }
+  const retryTiles = () => {
+    setTileErrorBanner(false)
+    tileErrorCountRef.current = 0
+    setReloadNonce(n => n + 1)
+  }
+
   // round33, блок A: `vectorIsCached`/`rasterIsCached` — `const`, а
   // useMemo ниже их читал ДО этой точки объявления (temporal dead zone) —
   // React бросал `ReferenceError: Cannot access 'X' before initialization`
@@ -231,7 +256,14 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
 
   return (
     <div style={{ position: 'relative', height: '100%', width: '100%' }}>
-      <MapContainer center={initialCenter} zoom={9} zoomControl={false} style={{ height: '100%', width: '100%' }}>
+      <MapContainer center={initialCenter} zoom={9} zoomControl={false} attributionControl={false} style={{ height: '100%', width: '100%' }}>
+        {/* round33, блок C.3: убрана ссылка на саму Leaflet (prefix) —
+            установлено фактом (см. docs/round33-reboot-incident.md), что
+            базовые подложки — сторонние (OpenStreetMap, Esri), их
+            указание обязательно условиями использования и сохранено
+            через attribution проп у TileLayer ниже; сам движок карт
+            (Leaflet) — не источник данных, ссылка на него не требуется. */}
+        <AttributionControl position="bottomright" prefix={false} />
         <ZoomControl position="topright" />
         <FitBounds bbox={bbox} />
         <FeatureInfo layerName={vectorLayer} cqlExpr={cqlExpr} onMapClick={setClickCoords} />
@@ -247,18 +279,37 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
             attribution="Tiles &copy; Esri" />
         )}
         {showMosaic && (
-          <WMSTileLayer key={`mosaic-${rasterLayer}`} zIndex={300}
+          <WMSTileLayer key={`mosaic-${rasterLayer}-${reloadNonce}`} zIndex={300}
             url={rasterWmsUrl} version="1.1.1"
             layers={rasterLayer} format="image/png" transparent
-            params={wmsRasterParams} />
+            params={wmsRasterParams}
+            eventHandlers={{ tileerror: handleTileError }} />
         )}
         {showVectors && (
-          <WMSTileLayer key={vectorLayer} zIndex={500}
+          <WMSTileLayer key={`${vectorLayer}-${reloadNonce}`} zIndex={500}
             url={vectorWmsUrl} version="1.1.1"
             layers={vectorLayer} format="image/png" transparent
-            params={wmsVectorParams} />
+            params={wmsVectorParams}
+            eventHandlers={{ tileerror: handleTileError }} />
         )}
       </MapContainer>
+
+      {tileErrorBanner && (
+        <div style={{
+          position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 1000, background: '#f8d7da', border: '1px solid #f5c2c7',
+          borderRadius: 6, padding: '8px 16px', display: 'flex', alignItems: 'center',
+          gap: 12, boxShadow: '0 2px 6px rgba(0,0,0,0.15)', fontSize: 14,
+        }}>
+          <span>Слой данных недоступен (проблема на сервере карт). Базовая подложка работает.</span>
+          <button
+            onClick={retryTiles}
+            style={{ cursor: 'pointer', padding: '4px 10px', borderRadius: 4, border: '1px solid #ccc' }}
+          >
+            Повторить
+          </button>
+        </div>
+      )}
 
       <CoordBar coords={clickCoords} />
     </div>

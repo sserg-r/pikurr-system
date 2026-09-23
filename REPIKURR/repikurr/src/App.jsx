@@ -23,6 +23,10 @@ function App() {
   // round32, блок C: версия данных последней доставки (стабильна между
   // доставками) — заменяет случайный cache-buster на фронтенде.
   const [dataVersion, setDataVersion] = useState(null)
+  // round33, блок C.1: раньше сбой этого запроса тонул в console.error —
+  // пользователь видел карту без списка годов/районов и не понимал,
+  // сломано что-то или так и должно быть. Явный баннер + повтор.
+  const [yearDistrictError, setYearDistrictError] = useState(false)
 
   async function handleZoomTo(nrUser) {
     try {
@@ -89,14 +93,17 @@ function App() {
   // Не устанавливаем selectedYear автоматически — null и так рендерит
   // корректный (последний) год; explicit-выбор пользователем остаётся
   // (селектор года в Sidebar, handleReset ниже).
-  if (!availableYears.length) {
+  if (!availableYears.length && !yearDistrictError) {
     loadYearDistrictData()
       .then(({ years, districtsByYear: dby, dataVersion: dv }) => {
         setAvailableYears(years)
         setDistrictsByYear(dby)
         setDataVersion(dv)
       })
-      .catch(e => console.error(e))
+      .catch(e => {
+        console.error(e)
+        setYearDistrictError(true)
+      })
   }
 
   // Сброс всех фильтров
@@ -172,6 +179,22 @@ function App() {
         districtsByYear={districtsByYear}
       />
       <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+        {yearDistrictError && (
+          <div style={{
+            position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 1000, background: '#fff3cd', border: '1px solid #ffcc00',
+            borderRadius: 6, padding: '8px 16px', display: 'flex', alignItems: 'center',
+            gap: 12, boxShadow: '0 2px 6px rgba(0,0,0,0.15)', fontSize: 14,
+          }}>
+            <span>Не удалось загрузить список годов и районов. Карта продолжает работать.</span>
+            <button
+              onClick={() => setYearDistrictError(false)}
+              style={{ cursor: 'pointer', padding: '4px 10px', borderRadius: 4, border: '1px solid #ccc' }}
+            >
+              Повторить
+            </button>
+          </div>
+        )}
         {/* Кнопка открытия панели (burger) — видна только когда панель скрыта */}
         {!sidebarOpen && (
           <button

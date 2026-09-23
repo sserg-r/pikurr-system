@@ -1,0 +1,7 @@
+/home/user/repikurr/external_healthcheck.log {
+    size 20M
+    rotate 5
+    missingok
+    notifempty
+    copytruncate
+}
