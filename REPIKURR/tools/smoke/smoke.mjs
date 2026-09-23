@@ -52,13 +52,23 @@ async function main() {
   // ПЕРВЫЙ увиденный запрос на каждый слой, дальше — только сеть по
   // freshNet ниже (эта запись не чистится).
   const capturedGwcUrls = {}
+  // round35, блок C1: ВСЕ тайловые запросы за прогон (не только первый на
+  // слой) — источник факта для распределения зумов, которые реально
+  // запрашивает фронтенд за типичный сеанс (загрузка, год, район, слои,
+  // зум, сдвиг — всё, что уже делает этот сценарий).
+  const allTileRequests = []
   page.on('response', resp => {
     const url = resp.url()
     netLog.push({ url, status: resp.status() })
-    if (url.includes('/gwc/service/wms')) {
+    const isGetMap = /[?&]request=GetMap/i.test(url)
+    if (isGetMap && (url.includes('/gwc/service/wms') || url.includes('/geoserver/pikurr/wms'))) {
       const layerMatch = url.match(/[?&]layers=([^&]+)/)
+      const bboxMatch = url.match(/[?&]bbox=([^&]+)/)
       const layer = layerMatch ? decodeURIComponent(layerMatch[1]) : null
-      if (layer && !capturedGwcUrls[layer]) {
+      if (layer && bboxMatch) {
+        allTileRequests.push({ layer, bbox: decodeURIComponent(bboxMatch[1]), status: resp.status() })
+      }
+      if (layer && url.includes('/gwc/service/wms') && !capturedGwcUrls[layer]) {
         capturedGwcUrls[layer] = url
       }
     }
@@ -265,6 +275,14 @@ async function main() {
     console.log(`\nПерехвачено GWC-URL для слоёв: ${Object.keys(capturedGwcUrls).join(', ')} → ${CAPTURE_OUT}`)
   } else {
     console.log('\nGWC-URL не перехвачены за этот прогон — captured_gwc_urls.json не обновлён.')
+  }
+
+  // round35, блок C1: полный список тайловых запросов за прогон — сырьё
+  // для оценки распределения зумов (REPIKURR/tools/analyze_zoom_usage.py).
+  if (allTileRequests.length > 0) {
+    const outPath = join(dirname(CAPTURE_OUT), 'all_tile_requests.json')
+    writeFileSync(outPath, JSON.stringify(allTileRequests, null, 2))
+    console.log(`Всего тайловых запросов за прогон: ${allTileRequests.length} → ${outPath}`)
   }
 
   console.log('\n--- Итог ---')
