@@ -87,31 +87,39 @@ GEOSERVER_COVERAGESTORE = os.getenv("GEOSERVER_COVERAGESTORE", "image_assessment
 # GiB для обоих слоёв на z9-14, z15 один уже превышает квоту). Потоков — 2
 # (столько же, сколько vCPU на VPS, "не выжрать целиком" — round35 C1).
 #
-# round35, блок C2: НАЙДЕНА, НЕ РЕШЕНА проблема надёжности — на эмуляторе
-# засев ОБОИХ слоёв (по отдельности, в разных прогонах) стабильно
-# зависал примерно на 50% прогресса на много минут при CPU GeoServer
-# около 0% (не перегрузка — похоже на внутреннюю блокировку GWC,
-# возможно конфликт с периодическим GWC cacheCleanUp диск-квоты,
-# cacheCleanUpFrequency=60с, гипотеза не подтверждена отдельным
-# экспериментом). Предохранитель `GWC_SEED_MAX_WAIT_S` сработал
-# корректно (доставка не подвисла бесконечно), но реального успешного
-# завершения засева на полном диапазоне z9-14 в этом раунде добиться не
-# удалось. **Дефолт — ВЫКЛЮЧЕНО**, пока причина не найдена и не
-# исправлена (docs/round35-seeding.md, C2/C3) — включать явным
-# `GWC_SEED_ENABLED=true` только для контролируемых экспериментов, НЕ
-# на постоянной основе на VPS.
-GWC_SEED_ENABLED = os.getenv("GWC_SEED_ENABLED", "false").lower() not in ("0", "false", "no")
+# round35, блок C2: "зависание на ~50%" — round36, блок A/D установил
+# причину фактом (декомпиляция GWC 1.24.2 + воспроизведение на
+# эмуляторе, docs/round36-seeding-fix.md): реального зависания НЕ было.
+# Каждая строка ответа `long-array-array` — это отдельный ПОТОК одной
+# задачи, и КАЖДЫЙ поток репортит ОДНО И ТО ЖЕ полное значение
+# tilesTotal (не свою долю); прежний код суммировал total по строкам и
+# при threadCount=2 видел цель вдвое больше настоящей — отсюда
+# ощущение "зависло на полпути", хотя задача уже легитимно перешла в
+# DONE и была вычищена (пустой список задач — НЕ ложный успех, это
+# подтверждено 12/12 прогонами на эмуляторе и повторно на VPS: итоговое
+# число файлов на диске каждый раз совпадало с независимым расчётом
+# tile_math.tile_range_for_bbox_3857 и с HIT на контрольных
+# непустых тайлах из round32_assets). Разница между целью GWC
+# (посчитана по сетке метатайлов 4×4, с запасом по краям) и реальным
+# числом файлов (~7.5%, НЕ те "вдвое", что виделись из-за бага выше) —
+# GeoServer отвечает ServiceException на крайние метатайлы, целиком
+# выходящие за bbox слоя, GWC засчитывает метатайл как обработанный, но
+# файл не пишет. **Дефолт — включено**: правило "готово ≠ сделано"
+# выполнено — успех проверен по содержимому (диск + HIT), не только по
+# факту опустения списка задач.
+GWC_SEED_ENABLED = os.getenv("GWC_SEED_ENABLED", "true").lower() not in ("0", "false", "no")
 GWC_SEED_LAYERS = ("fields_latest", "image_assessment")
 GWC_SEED_ZOOM_START = int(os.getenv("GWC_SEED_ZOOM_START", "9"))
 GWC_SEED_ZOOM_STOP = int(os.getenv("GWC_SEED_ZOOM_STOP", "14"))
 GWC_SEED_THREAD_COUNT = int(os.getenv("GWC_SEED_THREAD_COUNT", "2"))
-# round35, C2: пока не найдена причина зависания на ~50% (см. выше),
-# наблюдалось только "быстро закончилось (~100-200с)" или "зависло
-# насмерть, не восстанавливается" — ни одного случая "медленно, но
-# доехало". 300с — достаточно щедро для наблюдённого успешного темпа
-# (десятки тысяч тайлов за <2 мин), не имеет смысла ждать дольше в
-# расчёте на самовосстановление, которого пока не наблюдалось ни разу.
-GWC_SEED_MAX_WAIT_S = int(os.getenv("GWC_SEED_MAX_WAIT_S", "300"))
+# round36, блок C: полный диапазон z9-14 на VPS измерен фактом —
+# 299.8с одним прогоном (см. docs/round36-seeding-fix.md, блок C) —
+# вплотную к прежнему пределу 300с, реальный риск ложного срабатывания
+# предохранителя на обычной, не зависшей доставке при чуть большей
+# загрузке burstable VPS. Поднято с запасом ~1.4× над наблюдённым
+# максимумом, не бесконечно — по-прежнему нет ни одного факта "долго,
+# но доехало после зависания", ждать сильно дольше смысла нет.
+GWC_SEED_MAX_WAIT_S = int(os.getenv("GWC_SEED_MAX_WAIT_S", "420"))
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 GEODATA_DIR = SCRIPT_DIR / "data" / "geodata"
@@ -1015,6 +1023,7 @@ def _seed_gwc_layer(store_name: str, auth: tuple) -> dict:
 
     logger.info(f"  [{store_name}] засев GWC запущен (z{GWC_SEED_ZOOM_START}-{GWC_SEED_ZOOM_STOP}, {GWC_SEED_THREAD_COUNT} потока)")
 
+    last_done, last_total = None, None
     while time.monotonic() - t0 < GWC_SEED_MAX_WAIT_S:
         time.sleep(15)
         try:
@@ -1039,10 +1048,37 @@ def _seed_gwc_layer(store_name: str, auth: tuple) -> dict:
         active = tasks.get("long-array-array") if isinstance(tasks, dict) else None
         if not active:
             elapsed = time.monotonic() - t0
+            # round36, блок A: пустой список задач — законное завершение
+            # (GWCTask переходит RUNNING(1)→DONE(2) и вычищается drain()),
+            # подтверждено декомпиляцией GWC и повторным фактом на
+            # эмуляторе (реальное число файлов на диске сошлось с
+            # независимым расчётом по tile_math.py в 100% прогонов,
+            # docs/round36-seeding-fix.md, блок A). Тем не менее пишем
+            # последний известный прогресс по правилу "готово ≠ сделано"
+            # (CLAUDE.md) — для последующего разбора, если возникнет
+            # расхождение на другой машине/версии GWC.
+            if last_done is not None and last_total:
+                ratio = last_done / last_total
+                logger.info(
+                    f"  [{store_name}] последний известный прогресс перед опустением списка задач: "
+                    f"{last_done}/{last_total} ({ratio:.0%})"
+                )
             logger.info(f"  [{store_name}] засев GWC завершён за {elapsed:.1f}с")
             return {"ok": True, "layer": store_name, "seconds": round(elapsed, 1)}
+        # round36, блок A/D: КАЖДАЯ строка long-array-array — это один
+        # ПОТОК той же самой задачи и репортит ОДИНАКОВОЕ полное значение
+        # tilesTotal (не свою долю) — GWCTask.getTilesTotal() общий на
+        # задачу, не на поток (проверено декомпиляцией TileBreeder.class
+        # и повторным фактом на эмуляторе, docs/round36-seeding-fix.md,
+        # блок A2/D). Суммирование total по строкам (как было раньше)
+        # искусственно удваивало цель при threadCount=2 и создавало
+        # ложное впечатление "зависания на ~50%", когда задача на самом
+        # деле уже успешно закончилась (round35, C2 — тот же диагноз, не
+        # был устранён в этом раунде). done по строкам — РАЗНЫЙ (реальный
+        # прогресс каждого потока), сумма done корректна.
         done = sum(t[0] for t in active)
-        total = sum(t[1] for t in active)
+        total = max(t[1] for t in active)
+        last_done, last_total = done, total
         logger.info(f"  [{store_name}] засев GWC: {done}/{total} тайлов ({time.monotonic()-t0:.0f}с)")
 
     elapsed = time.monotonic() - t0
