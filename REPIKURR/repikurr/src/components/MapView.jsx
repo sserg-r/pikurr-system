@@ -279,9 +279,13 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
             attribution="Tiles &copy; Esri" />
         )}
         {showMosaic && (
+          // round34, блок A: `layers` для растра должен быть с workspace-префиксом
+          // (`rasterFqName`), не голым `rasterLayer` — `/geoserver/pikurr/wms`
+          // принимает оба варианта (workspace уже в пути), но `/geoserver/gwc/service/wms`
+          // не виртуализован по workspace и без префикса отдаёт 400 Unknown layer.
           <WMSTileLayer key={`mosaic-${rasterLayer}-${reloadNonce}`} zIndex={300}
             url={rasterWmsUrl} version="1.1.1"
-            layers={rasterLayer} format="image/png" transparent
+            layers={rasterFqName} format="image/png" transparent
             params={wmsRasterParams}
             eventHandlers={{ tileerror: handleTileError }} />
         )}
