@@ -192,20 +192,6 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
   const cacheBuster   = dataVersion || 'loading'
   const [clickCoords, setClickCoords] = useState(null)
 
-  // Мемоизируем params чтобы WMSTileLayer не пересоздавался при посторонних ре-рендерах
-  const wmsVectorParams = useMemo(
-    () => ({
-      ...(cqlExpr ? { CQL_FILTER: cqlExpr } : {}),
-      time: cacheBuster,
-      ...(vectorIsCached ? { tiled: true } : {}),
-    }),
-    [cqlExpr, cacheBuster, vectorIsCached]
-  )
-  const wmsRasterParams = useMemo(
-    () => (rasterIsCached ? { tiled: true } : {}),
-    [rasterIsCached]
-  )
-
   const vectorLayer = selectedYear ? 'pikurr:fields' : 'pikurr:fields_latest'
   const effectiveYear = selectedYear ?? maxYear
   const rasterLayer = (!effectiveYear || effectiveYear === maxYear)
@@ -223,6 +209,25 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
   const rasterIsCached = GWC_CACHED_LAYERS.has(rasterFqName)
   const vectorWmsUrl = vectorIsCached ? WMS_GWC_BASE_URL : WMS_BASE_URL
   const rasterWmsUrl = rasterIsCached ? WMS_GWC_BASE_URL : WMS_BASE_URL
+
+  // round33, блок A: `vectorIsCached`/`rasterIsCached` — `const`, а
+  // useMemo ниже их читал ДО этой точки объявления (temporal dead zone) —
+  // React бросал `ReferenceError: Cannot access 'X' before initialization`
+  // на каждом рендере без исключения (не только после ребута VPS),
+  // без ErrorBoundary это гарантированно давало белый экран всегда.
+  // Мемоизируем params чтобы WMSTileLayer не пересоздавался при посторонних ре-рендерах
+  const wmsVectorParams = useMemo(
+    () => ({
+      ...(cqlExpr ? { CQL_FILTER: cqlExpr } : {}),
+      time: cacheBuster,
+      ...(vectorIsCached ? { tiled: true } : {}),
+    }),
+    [cqlExpr, cacheBuster, vectorIsCached]
+  )
+  const wmsRasterParams = useMemo(
+    () => (rasterIsCached ? { tiled: true } : {}),
+    [rasterIsCached]
+  )
 
   return (
     <div style={{ position: 'relative', height: '100%', width: '100%' }}>
