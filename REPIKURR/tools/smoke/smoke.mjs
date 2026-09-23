@@ -16,9 +16,14 @@
 //   (BASE_URL по умолчанию — https://geobotany.of.by)
 
 import { chromium } from 'playwright'
+import { writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 
 const BASE_URL = process.env.BASE_URL || 'https://geobotany.of.by'
 const HEADLESS = process.env.HEADLESS !== 'false'
+const CAPTURE_OUT = process.env.CAPTURE_OUT ||
+  join(dirname(fileURLToPath(import.meta.url)), 'captured_gwc_urls.json')
 
 const results = []
 
@@ -39,8 +44,24 @@ async function main() {
   page.on('pageerror', err => consoleErrors.push(String(err)))
 
   const netLog = []
+  // round35, блок B1: реальные URL, которые фронтенд шлёт на GWC-эндпоинт
+  // для обоих кэшируемых слоёв — источник истины для healthcheck.py
+  // (round34 A3: healthcheck проверял /geoserver/pikurr/wms, фронтенд для
+  // кэшируемых слоёв ходит на /geoserver/gwc/service/wms — расхождение
+  // скрыло сломанный слой от единственной автопроверки). Захватывается
+  // ПЕРВЫЙ увиденный запрос на каждый слой, дальше — только сеть по
+  // freshNet ниже (эта запись не чистится).
+  const capturedGwcUrls = {}
   page.on('response', resp => {
-    netLog.push({ url: resp.url(), status: resp.status() })
+    const url = resp.url()
+    netLog.push({ url, status: resp.status() })
+    if (url.includes('/gwc/service/wms')) {
+      const layerMatch = url.match(/[?&]layers=([^&]+)/)
+      const layer = layerMatch ? decodeURIComponent(layerMatch[1]) : null
+      if (layer && !capturedGwcUrls[layer]) {
+        capturedGwcUrls[layer] = url
+      }
+    }
   })
 
   function freshConsoleErrors() {
@@ -233,6 +254,18 @@ async function main() {
   }
 
   await browser.close()
+
+  // round35, блок B1: дамп перехваченных GWC-URL для healthcheck.py —
+  // источник истины для проверок, не ручная сборка. Пишется даже если
+  // какие-то шаги сценария упали (полезно для диагностики), но не
+  // перетирает предыдущий валидный дамп пустым, если за весь прогон не
+  // нашлось ни одного GWC-запроса (например, сценарий упал до шага 4a).
+  if (Object.keys(capturedGwcUrls).length > 0) {
+    writeFileSync(CAPTURE_OUT, JSON.stringify(capturedGwcUrls, null, 2))
+    console.log(`\nПерехвачено GWC-URL для слоёв: ${Object.keys(capturedGwcUrls).join(', ')} → ${CAPTURE_OUT}`)
+  } else {
+    console.log('\nGWC-URL не перехвачены за этот прогон — captured_gwc_urls.json не обновлён.')
+  }
 
   console.log('\n--- Итог ---')
   const failed = results.filter(r => !r.ok)

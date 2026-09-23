@@ -24,12 +24,26 @@ import os
 import struct
 import subprocess
 import sys
+import urllib.parse
 import zlib
 from pathlib import Path
 
 import requests
 
 GEOSERVER_WORKSPACE = os.getenv("GEOSERVER_WORKSPACE", "pikurr")
+
+# round35, блок B1: URL, которые реально шлёт фронтенд на GWC-эндпоинт —
+# перехвачены дымовым сценарием (REPIKURR/tools/smoke/smoke.mjs), не
+# собраны вручную. round34 A3 нашёл причину, почему сломанный растровый
+# слой не заметила ни одна автопроверка: healthcheck проверял обычный
+# /geoserver/pikurr/wms, а фронтенд для КЭШИРУЕМЫХ слоёв ходит на
+# /geoserver/gwc/service/wms (нужен workspace-префикс в layers — GWC не
+# виртуализован по workspace). Обновлять этот файл — перезапустить
+# smoke.mjs (он сам перезаписывает captured_gwc_urls.json).
+CAPTURED_GWC_URLS_PATH = Path(
+    os.getenv("CAPTURED_GWC_URLS_PATH")
+    or (Path(__file__).parent / "tools" / "smoke" / "captured_gwc_urls.json")
+)
 
 FRONTEND_DB = {
     "host": os.getenv("FRONTEND_DB_HOST", "localhost"),
@@ -80,6 +94,107 @@ def check_wms(base_url: str, checks: list):
 
     ok, detail = _png_has_nonempty_colors(body)
     _check("wms_getmap", ok, f"HTTP {resp.status_code}, {detail}", checks)
+
+
+def _tiles_with_data_path() -> Path:
+    # round35, блок B2: на VPS/эмуляторе healthcheck.py обычно
+    # деплоится ОТДЕЛЬНЫМ файлом (не всем деревом PIKURR_REFACTOR), путь
+    # "на уровень выше REPIKURR/docs/..." там не существует — переопределять
+    # через TILES_WITH_DATA_PATH при деплое вне монорепо.
+    env_path = os.getenv("TILES_WITH_DATA_PATH")
+    if env_path:
+        return Path(env_path)
+    return Path(__file__).parent.parent / "docs" / "round32_assets" / "tiles_with_data.json"
+
+
+def _load_tiles_with_data() -> list:
+    path = _tiles_with_data_path()
+    return json.loads(path.read_text())
+
+
+def _lonlat_to_tile(lon: float, lat: float, z: int) -> tuple[int, int]:
+    import math
+    n = 2 ** z
+    x = int((lon + 180.0) / 360.0 * n)
+    lat_rad = math.radians(lat)
+    y = int((1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
+    return x, y
+
+
+def _tile_bbox_3857(x: int, y: int, z: int) -> list:
+    origin = 20037508.342789244
+    n = 2 ** z
+    tile_size = 2 * origin / n
+    minx = -origin + x * tile_size
+    maxx = minx + tile_size
+    maxy = origin - y * tile_size
+    miny = maxy - tile_size
+    return [minx, miny, maxx, maxy]
+
+
+def check_gwc_layers(base_url: str, checks: list):
+    """round35, блок B1: проверка ПО ТЕМ ЖЕ URL, что реально шлёт
+    фронтенд для кэшируемых слоёв (`/geoserver/gwc/service/wms`, полное
+    имя слоя с workspace-префиксом) — не по вручную собранному
+    `/geoserver/pikurr/wms`, который эту ошибку (round34, блок A) не
+    видел. Структура URL (все параметры, кроме `bbox`) берётся из
+    `captured_gwc_urls.json`, перезаписываемого `smoke.mjs` при каждом
+    прогоне; `bbox` заменяется на заведомо непустой тайл из
+    `docs/round32_assets/tiles_with_data.json` (round32: случайный bbox
+    даёт до 100% пустых тайлов — это ломало бы проверку независимо от
+    того, жив слой или нет)."""
+    if not CAPTURED_GWC_URLS_PATH.exists():
+        _check("gwc_layers", False,
+                f"{CAPTURED_GWC_URLS_PATH} не найден — запустить "
+                f"REPIKURR/tools/smoke/smoke.mjs хотя бы раз, чтобы "
+                f"перехватить реальные URL фронтенда", checks)
+        return
+
+    captured = json.loads(CAPTURED_GWC_URLS_PATH.read_text())
+    if not captured:
+        _check("gwc_layers", False,
+                f"{CAPTURED_GWC_URLS_PATH} пуст — прошлый прогон smoke.mjs "
+                f"не увидел ни одного GWC-запроса", checks)
+        return
+
+    try:
+        tiles = _load_tiles_with_data()
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        _check("gwc_layers", False,
+                f"{_tiles_with_data_path()} недоступен ({e}) — задать "
+                f"TILES_WITH_DATA_PATH или скопировать файл при деплое", checks)
+        return
+    tile = tiles[0]
+    z = tile["z"]
+    x, y = _lonlat_to_tile(tile["lon"], tile["lat"], z)
+    bbox = _tile_bbox_3857(x, y, z)
+    bbox_str = ",".join(str(v) for v in bbox)
+
+    for layer, captured_url in captured.items():
+        parsed = urllib.parse.urlsplit(captured_url)
+        params = dict(urllib.parse.parse_qsl(parsed.query))
+        params["bbox"] = bbox_str
+        params["srs"] = "EPSG:3857"
+        url = f"{base_url}{parsed.path}?{urllib.parse.urlencode(params)}"
+
+        check_name = f"gwc_layer[{layer}]"
+        try:
+            resp = requests.get(url, timeout=15)
+        except requests.RequestException as e:
+            _check(check_name, False, f"запрос не выполнен: {e}", checks)
+            continue
+
+        if b"Unknown layer" in resp.content or b"GWC Error" in resp.content:
+            _check(check_name, False,
+                    f"HTTP {resp.status_code}, GWC вернул ошибку "
+                    f"(похоже на round34 A — отсутствие workspace-префикса "
+                    f"или незарегистрированный слой): {resp.content[:200]}", checks)
+            continue
+
+        ok, detail = _png_has_nonempty_colors(resp.content)
+        cache_result = resp.headers.get("geowebcache-cache-result", "-")
+        _check(check_name, ok,
+                f"HTTP {resp.status_code}, {detail}, geowebcache-cache-result={cache_result}", checks)
 
 
 def check_wfs(base_url: str, checks: list):
@@ -257,6 +372,7 @@ def check_db_matches_static(static_data, checks: list):
 def run_healthcheck(base_url: str) -> dict:
     checks: list = []
     check_wms(base_url, checks)
+    check_gwc_layers(base_url, checks)
     check_wfs(base_url, checks)
     check_error_path(base_url, checks)
     check_main_page(base_url, checks)
