@@ -45,6 +45,37 @@ def lonlat_to_bbox_3857(lon, lat, z):
     return tile_bbox_3857(x, y, z)
 
 
+def tile_range_for_bbox_3857(bbox, z):
+    """Диапазон [tx_min, tx_max, ty_min, ty_max] тайлов, пересекающих bbox
+    (EPSG:3857, [minx,miny,maxx,maxy]) на уровне z (XYZ-конвенция, как
+    в tile_bbox_3857/lonlat_to_tile выше — y=0 на севере).
+
+    round36, блок B/D: нужен для построения списка URL тайлов по сетке
+    GWC и для независимого пересчёта заявленной GWC цели засева (сверка
+    с "long-array-array" из статуса REST-задачи, см. docs/round36-*).
+
+    `bbox` для реальных слоёв обычно сам представляет собой объединение
+    целых тайлов сетки (граница накопленных данных), поэтому maxx/maxy
+    почти точно совпадают с границей тайла — какой из двух соседних
+    тайлов получит округление, решает погрешность double на последнем
+    разряде. round36, блок B: `int(x // tile_size)` (floor-division) и
+    `math.floor(x / tile_size)` (обычное деление + floor) на таких
+    граничных значениях дали РАЗНЫЙ результат (52 против 53 тайлов по X
+    на z12) — сверка с реальным числом файлов на диске после засева GWC
+    (29960, см. docs/round36-seeding-fix.md, блок B) подтвердила верным
+    именно `math.floor(x / tile_size)`; используется он.
+    """
+    minx, miny, maxx, maxy = bbox
+    n = 2 ** z
+    tile_size = 2 * ORIGIN / n
+    tx_min = math.floor((minx + ORIGIN) / tile_size)
+    tx_max = math.floor((maxx + ORIGIN) / tile_size)
+    # y растёт вниз (север -> tile y=0), поэтому miny/maxy инвертированы
+    ty_min = math.floor((ORIGIN - maxy) / tile_size)
+    ty_max = math.floor((ORIGIN - miny) / tile_size)
+    return tx_min, tx_max, ty_min, ty_max
+
+
 def tiles_overlap(bbox_a, bbox_b):
     """True, если два bbox (EPSG:3857, [minx,miny,maxx,maxy]) пересекаются.
 

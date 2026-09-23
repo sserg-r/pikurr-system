@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  round36, блок A1: решающая проверка гипотезы «засев встаёт на ~50%
+  из-за исчерпания квоты 2 GiB» (цель по обоим слоям ~2.3 GiB по
+  средним весам тайлов из round35). Квота здесь заведомо превышает
+  потребность (8 GiB) — если засев при ЭТОЙ квоте доходит до
+  объявленной GWC цели, гипотеза A1 подтверждена; если всё равно
+  останавливается на той же доле — гипотеза A1 опровергнута, искать
+  причину в A2/A3.
+
+  Применение — см. подробный комментарий в gwc_diskquota_2gib.xml
+  (тот же метод: писать файл напрямую, REST PUT не персистентен):
+    cp geoserver_data/gwc/geowebcache-diskquota.xml \
+       geoserver_data/gwc/geowebcache-diskquota.xml.bak_round36
+    cp REPIKURR/tools/gwc_diskquota_8gib.xml \
+       geoserver_data/gwc/geowebcache-diskquota.xml
+    docker compose -f docker-compose.server.yml restart geoserver
+
+  ВРЕМЕННЫЙ экспериментальный файл — только для эмулятора (round36,
+  блок A1). Не применять на VPS. Откат — тем же способом с .bak_round36.
+-->
+<gwcQuotaConfiguration>
+  <enabled>true</enabled>
+  <cacheCleanUpFrequency>60</cacheCleanUpFrequency>
+  <cacheCleanUpUnits>SECONDS</cacheCleanUpUnits>
+  <maxConcurrentCleanUps>2</maxConcurrentCleanUps>
+  <globalExpirationPolicyName>LFU</globalExpirationPolicyName>
+  <globalQuota><value>8</value><units>GiB</units></globalQuota>
+  <quotaStore>HSQL</quotaStore>
+</gwcQuotaConfiguration>
