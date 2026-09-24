@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -141,15 +142,69 @@ class PackageTask:
                     f"среди TIF в {year_dir} и не попадут в поставку: {missing}"
                 )
 
-    def create_manifest(self, years: list[int]):
-        """Создает файл описания пакета"""
+    def _git_commit(self) -> str | None:
+        """Коммит ETL-кода на момент сборки — round38, D1: без этого нельзя
+        узнать, каким кодом собран конкретный пакет, задним числом."""
+        try:
+            out = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=Path(__file__).resolve().parents[3],
+                capture_output=True, text=True, check=True,
+            )
+            return out.stdout.strip()
+        except Exception as e:
+            logger.warning(f"Не удалось определить git-коммит ETL-кода: {e}")
+            return None
+
+    def _table_row_counts(self) -> dict:
+        counts = {}
+        for table in ("agrifields", "razgrafka", "assessment"):
+            try:
+                df = self.db.execute_query(f"SELECT count(*) AS n FROM {table}")
+                counts[table] = int(df["n"].iloc[0])
+            except Exception as e:
+                logger.warning(f"Не удалось посчитать строки {table}: {e}")
+                counts[table] = None
+        return counts
+
+    def _raster_counts_by_year(self, years: list[int]) -> dict:
+        counts = {}
+        for year in years:
+            year_dir = self.public_rasters_dir / str(year)
+            n = len(list(year_dir.glob("*.tif"))) + len(list(year_dir.glob("*.TIF")))
+            counts[str(year)] = n
+        return counts
+
+    def create_manifest(self, years: list[int], gpkg_path: Path):
+        """Создаёт файл описания пакета.
+
+        round38 (блок D1, разбор подмены боевых данных): версия 2.0 несла
+        только годы и дату СБОРКИ ZIP — этого недостаточно, чтобы отличить
+        свежий прогон ETL от случайно поднятой старой остановленной базы
+        (см. docs/round38-data-incident.md). Версия 2.1 добавляет источник
+        (хост/имя БД — не пароль), коммит ETL-кода, число строк по каждой
+        боевой таблице, число растровых листов по годам и контрольную сумму
+        `vectors.gpkg` — простой честный провенанс, не защита сама по себе
+        (её даёт предполётная проверка в deliver.py), а материал для неё и
+        для ручного разбора при следующем инциденте.
+        """
         latest_year = max(years) if years else self.get_target_year()
+        with open(gpkg_path, "rb") as f:
+            gpkg_sha256 = hashlib.sha256(f.read()).hexdigest()
         manifest = {
             "created_at": datetime.datetime.now().isoformat(),
             "year": latest_year,        # последний год (для совместимости)
             "years": years,             # все годы, включённые в пакет
-            "version": "2.0",
-            "contents": ["vectors.gpkg", "rasters/"]
+            "version": "2.1",
+            "contents": ["vectors.gpkg", "rasters/"],
+            "source_db": {
+                "host": self.settings.db.host,
+                "name": self.settings.db.name,
+            },
+            "etl_git_commit": self._git_commit(),
+            "row_counts": self._table_row_counts(),
+            "raster_counts_by_year": self._raster_counts_by_year(years),
+            "vectors_gpkg_sha256": gpkg_sha256,
         }
         return json.dumps(manifest, indent=2)
 
@@ -191,7 +246,7 @@ class PackageTask:
 
             # 5. Манифест
             with open(build_dir / "manifest.json", "w") as f:
-                f.write(self.create_manifest(raster_years))
+                f.write(self.create_manifest(raster_years, gpkg_path))
 
             # 6. Архивирование (ZIP)
             zip_filename = self.dist_dir / f"{package_name}.zip"

@@ -127,6 +127,13 @@ STATUS_DIR = SCRIPT_DIR / "status"
 # round23, задача 1: статика для списка годов/районов — отдаётся Caddy,
 # не GeoServer (см. write_year_district_lookup()).
 STATIC_DIR = SCRIPT_DIR / "static"
+# round38, блок D3: pg_dump боевых таблиц перед КАЖДОЙ подменой — до этого
+# раунда единственным откатом ДАННЫХ была случайная удача найти уцелевшую
+# копию на другой машине (docs/round38-data-incident.md). Хранится N
+# последних (BACKUP_RETENTION_COUNT), не бесконечно — на VPS ограниченный
+# диск (см. "Машины и доступ" в CLAUDE.md).
+BACKUP_DIR = SCRIPT_DIR / "backups"
+DEFAULT_BACKUP_RETENTION = int(os.getenv("BACKUP_RETENTION_COUNT", "10"))
 
 # pikurr_update_{years_tag}_{YYYY-MM-DD_HH-MM}.zip — years_tag сам может
 # содержать подчёркивания, поэтому имя разбирается по дате в конце, а не
@@ -307,6 +314,15 @@ class SchemaVersionError(RuntimeError):
     на боевой БД — доставка отклоняется до единого изменения БД, чтобы
     не откатить схему назад (найдено фактом: рассинхрон стенда с
     репозиторием мог унести на VPS устаревший SQL, round29 A1-A2)."""
+    pass
+
+
+class YearCompositionGuardError(RuntimeError):
+    """round38, блок D2: набор лет в пакете отличается от набора лет,
+    уже стоящего на боевой витрине. Тот же принцип, что SwapGuardError
+    (round26) — но по СОСТАВУ, а не по объёму: усыхание/рост числа строк
+    не ловит подмену состава (round38-инцидент — строк стало БОЛЬШЕ, а
+    витрина получила 2 чужих года вместо ожидаемого одного текущего)."""
     pass
 
 
@@ -649,6 +665,111 @@ def ensure_unique_constraint():
 
     run_sql("ALTER TABLE assessment ADD CONSTRAINT assessment_fid_year_key UNIQUE (fid_ext, year);")
     logger.info("Ограничение assessment_fid_year_key применено.")
+
+
+def backup_before_swap(retention_count: int = DEFAULT_BACKUP_RETENTION) -> dict | None:
+    """pg_dump боевых agrifields/razgrafka/assessment перед подменой
+    (round38, D3) — единственный путь отката ДАННЫХ, а не только кода/
+    конфигурации. Custom-формат (`-Fc`), один файл на три таблицы —
+    восстановление: `pg_restore -d <db> <файл>` (пересоздаёт таблицы,
+    не трогает остальную БД, т.к. дамп содержит только эти три таблицы).
+
+    Если 'assessment' ещё не существует (первая доставка на пустую БД,
+    round28 E) — бэкапить нечего, пропускается молча, как и в
+    `_check_year_composition`.
+    """
+    exists = _run_psql("SELECT 1 FROM pg_class WHERE relname = 'assessment' AND relkind = 'r';").strip()
+    if exists != "1":
+        logger.info("Боевая таблица 'assessment' ещё не существует — бэкап пропущен.")
+        return None
+
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dump_path = BACKUP_DIR / f"backup_{ts}.dump"
+
+    env = os.environ.copy()
+    env["PGPASSWORD"] = FRONTEND_DB["password"]
+    cmd = [
+        "pg_dump",
+        "-h", FRONTEND_DB["host"],
+        "-p", str(FRONTEND_DB["port"]),
+        "-U", FRONTEND_DB["user"],
+        "-Fc", "-f", str(dump_path),
+        "-t", "agrifields", "-t", "razgrafka", "-t", "assessment",
+        FRONTEND_DB["name"],
+    ]
+    logger.info(f"Бэкап боевых таблиц перед подменой → {dump_path.name}...")
+    t0 = time.monotonic()
+    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    elapsed = time.monotonic() - t0
+    if result.returncode != 0:
+        # Не блокируем доставку из-за неудачного бэкапа (диск полон и т.п.)
+        # — но громко логируем, это осознанный компромисс, не тихий сбой.
+        logger.error(f"pg_dump не удался ({elapsed:.1f}с): {result.stderr}")
+        if dump_path.exists():
+            dump_path.unlink()
+        return {"ok": False, "error": result.stderr.strip(), "seconds": round(elapsed, 2)}
+
+    size_bytes = dump_path.stat().st_size
+    logger.info(f"Бэкап готов: {dump_path.name}, {size_bytes / 1e6:.1f} МБ, {elapsed:.1f}с.")
+
+    # Ротация — оставляем retention_count последних.
+    existing = sorted(BACKUP_DIR.glob("backup_*.dump"))
+    deleted = []
+    while len(existing) > retention_count:
+        oldest = existing.pop(0)
+        oldest.unlink()
+        deleted.append(oldest.name)
+    if deleted:
+        logger.info(f"Ротация бэкапов: удалено {len(deleted)} старых ({deleted}).")
+
+    return {
+        "ok": True,
+        "path": str(dump_path),
+        "size_bytes": size_bytes,
+        "seconds": round(elapsed, 2),
+        "retention_count": retention_count,
+    }
+
+
+def _check_year_composition(manifest_years: list[int], *, allow_year_change: bool = False):
+    """round38, блок D2: предполётная проверка СОСТАВА, не объёма.
+
+    Инцидент round37/38: боевые таблицы заменились пакетом с ДРУГИМ
+    набором лет (2023/2024/2025 вместо одного текущего 2025), при этом
+    числа строк не усохли (SwapGuardError, round26, молчал — строк стало
+    БОЛЬШЕ). Здесь сверяется НАБОР лет, а не количество: если набор лет
+    в пакете (`manifest["years"]`) отличается от набора лет, уже стоящих
+    на боевой `assessment`, доставка отменяется ДО первого изменения
+    БД/растров/GeoServer — тот же принцип, что и `SwapGuardError`, тем же
+    способом обхода: явный флаг `--allow-year-change` для легитимного
+    случая (например, первая доставка нового года).
+
+    Если боевая таблица `assessment` ещё не существует (первая доставка
+    на пустую БД, round28 E) — сравнивать не с чем, проверка молча
+    пропускается.
+    """
+    if allow_year_change:
+        logger.info("--allow-year-change: проверка состава лет пропущена.")
+        return
+    exists = _run_psql("SELECT 1 FROM pg_class WHERE relname = 'assessment' AND relkind = 'r';").strip()
+    if exists != "1":
+        logger.info("Боевая таблица 'assessment' ещё не существует — сравнивать не с чем.")
+        return
+    live_years_raw = _run_psql("SELECT DISTINCT year FROM assessment ORDER BY year;").strip()
+    live_years = {int(y) for y in live_years_raw.splitlines() if y.strip()}
+    pkg_years = {int(y) for y in manifest_years}
+    if live_years and pkg_years != live_years:
+        message = (
+            f"Доставка отменена (round38, D2): набор лет в пакете "
+            f"{sorted(pkg_years)} отличается от набора лет на витрине "
+            f"{sorted(live_years)}. Боевые таблицы НЕ тронуты. Если это "
+            f"ожидаемо (например, добавляется новый год) — перезапустите "
+            f"с --allow-year-change."
+        )
+        logger.error(message)
+        raise YearCompositionGuardError(message)
+    logger.info(f"Состав лет пакета совпадает с боевым: {sorted(pkg_years)}.")
 
 
 # round27, A2: версия схемы объектов assessment_ready/levelsagg_ready,
@@ -1257,6 +1378,10 @@ class _StepTracker:
         self.zip_name = zip_name
         self.started_at = started_at
         self._step = "unpack"
+        # round38, D1: манифест пакета — как только распакован, чтобы
+        # провенанс попал в статус-файл даже при падении на ЛЮБОМ шаге
+        # после unpack, не только при полном успехе.
+        self.manifest: dict | None = None
         self._write_intermediate()
 
     @property
@@ -1288,13 +1413,15 @@ class _StepTracker:
 
 def deliver(zip_path: Path, tracker: "_StepTracker", *,
             shrink_threshold: float = DEFAULT_SHRINK_THRESHOLD,
-            allow_shrink: bool = False) -> dict:
+            allow_shrink: bool = False,
+            allow_year_change: bool = False) -> dict:
     with tempfile.TemporaryDirectory(prefix="pikurr_deliver_") as tmpdir:
         tmp = Path(tmpdir)
 
         # 1. Распаковка
         tracker.step = "unpack"
         manifest = unpack(zip_path, tmp)
+        tracker.manifest = manifest
         year = manifest["year"]  # последний год (для legacy-совместимости)
 
         # 1б. round29, блок A: защита от отката схемы — до ЛЮБОГО изменения
@@ -1314,6 +1441,11 @@ def deliver(zip_path: Path, tracker: "_StepTracker", *,
                 f"образ) и соберите пакет заново."
             )
 
+        # 1в. round38, блок D2: предполётная проверка состава лет — до
+        # ЛЮБОГО изменения БД/растров, тем же принципом, что 1б выше.
+        tracker.step = "check_year_composition"
+        _check_year_composition(manifest.get("years", [year]), allow_year_change=allow_year_change)
+
         # 2. Растры (все годы из пакета)
         tracker.step = "copy_rasters"
         rasters_by_year = copy_rasters(tmp / "rasters")
@@ -1329,6 +1461,13 @@ def deliver(zip_path: Path, tracker: "_StepTracker", *,
                     shutil.copy2(tif, dst / tif.name)
                 rasters_by_year = {year: len(tifs)}
                 logger.info(f"Legacy: скопировано {len(tifs)} TIF → {dst}")
+
+        # 2б. round38, D3: pg_dump боевых таблиц ДО их подмены — единственный
+        # путь отката данных (не только по счастливой случайности, как в
+        # round38-инциденте). После обеих предполётных проверок (1б, 1в),
+        # но до первого реального изменения БД.
+        tracker.step = "backup_before_swap"
+        backup_result = backup_before_swap()
 
         # 3. Векторы → PostGIS (round25, блок B2: через staging-таблицы —
         # TRUNCATE+INSERT в боевые вместо DROP CASCADE от ogr2ogr -overwrite,
@@ -1414,6 +1553,7 @@ def deliver(zip_path: Path, tracker: "_StepTracker", *,
         "refresh_seconds": round(refresh_seconds, 2),
         "seed_gwc_cache": seed_result,
         "healthcheck": healthcheck_result,
+        "backup": backup_result,
     }
 
 
@@ -1442,7 +1582,9 @@ def write_status(zip_name: str, started_at: datetime, finished_at: datetime,
                   error: str | None = None, granules_after: int | None = None,
                   refresh_seconds: float | None = None,
                   healthcheck: dict | None = None,
-                  seed_gwc_cache: dict | None = None):
+                  seed_gwc_cache: dict | None = None,
+                  manifest: dict | None = None,
+                  backup: dict | None = None):
     """Пишет статус доставки, который PushTask опрашивает по ssh (round19: до
     этого отправляющая сторона не знала, дошла ли доставка до конца).
     Пишется всегда — и при успехе, и при падении на любом шаге."""
@@ -1466,6 +1608,13 @@ def write_status(zip_name: str, started_at: datetime, finished_at: datetime,
         # отключён/не добежал до записи статуса — сама доставка это не
         # останавливает, см. seed_gwc_cache()).
         "seed_gwc_cache": seed_gwc_cache,
+        # round38, D1: провенанс пакета (источник БД, коммит ETL-кода,
+        # число строк/растров, sha256 vectors.gpkg) — как записано в его
+        # manifest.json. None, если доставка упала ДО unpack (провенанс
+        # пакета ещё не прочитан).
+        "manifest": manifest,
+        # round38, D3: результат pg_dump боевых таблиц перед подменой.
+        "backup": backup,
     }
     path = STATUS_DIR / f"{zip_name}.json"
     tmp_path = path.with_suffix(".json.tmp")
@@ -1567,6 +1716,14 @@ def main():
         "--allow-shrink", action="store_true",
         help="round26, B1: отключить проверку усадки _stage (для законной массовой правки)",
     )
+    parser.add_argument(
+        "--allow-year-change", action="store_true",
+        help=(
+            "round38, D2: отключить проверку состава лет (пакет несёт другой "
+            "набор лет, чем сейчас на витрине) — для законного случая, "
+            "например добавления нового года"
+        ),
+    )
     args = parser.parse_args()
 
     if args.cleanup:
@@ -1619,13 +1776,16 @@ def main():
 
     healthcheck_result = None
     seed_result = None
+    backup_result = None
     try:
         result = deliver(zip_path, tracker, shrink_threshold=args.shrink_threshold,
-                          allow_shrink=args.allow_shrink)
+                          allow_shrink=args.allow_shrink,
+                          allow_year_change=args.allow_year_change)
         granules_after = result.get("granules_after")
         refresh_seconds = result.get("refresh_seconds")
         healthcheck_result = result.get("healthcheck")
         seed_result = result.get("seed_gwc_cache")
+        backup_result = result.get("backup")
         ok = True
     except Exception as e:
         error_msg = str(e)
@@ -1639,6 +1799,8 @@ def main():
             refresh_seconds=refresh_seconds,
             healthcheck=healthcheck_result,
             seed_gwc_cache=seed_result,
+            manifest=tracker.manifest,
+            backup=backup_result,
         )
 
     if not ok:
