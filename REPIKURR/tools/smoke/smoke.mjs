@@ -135,6 +135,96 @@ async function main() {
   }
   record('3. Выбор района', districtOk || !targetDistrict, districtDetail)
 
+  // ---- 3.1-3.4. Подсветка выбранной группы (round37, блок A4.1) --------
+  // Критерии по содержимому: в сети виден запрос ВЕРХНЕГО слоя (обычный
+  // /geoserver/pikurr/wms, НЕ через GWC — round37 A1 показал фактом, что
+  // GWC игнорирует CQL_FILTER) с ожидаемым CQL_FILTER; НИЖНИЙ слой
+  // по-прежнему идёт через GWC и отдаёт geowebcache-cache-result: HIT (не
+  // MISS — иначе фон незаметно перестал бы кэшироваться из-за утечки
+  // фильтра группы в GWC-запрос); число объектов в подсветке сверяется с
+  // WFS-запросом тем же CQL_FILTER.
+  function checkHighlight(stepName) {
+    // верхний слой подсветки: GetMap на обычном /geoserver/pikurr/wms
+    // (НЕ через /gwc/ — round37 A1 показал фактом, что GWC игнорирует
+    // CQL_FILTER), обязательно с непустым CQL_FILTER.
+    const highlightReqs = netLog.filter(r =>
+      /[?&]request=GetMap/i.test(r.url) &&
+      r.url.includes('/geoserver/pikurr/wms') &&
+      !r.url.includes('/gwc/') &&
+      r.url.toLowerCase().includes('cql_filter')
+    )
+    // нижний (фоновый) слой идёт через GWC — фильтр группы туда попадать
+    // не должен (иначе GWC получал бы разные CQL_FILTER на один и тот же
+    // кэшированный тайл и это осталось бы незамеченным, т.к. GWC их
+    // просто игнорирует и всегда отдаёт HIT одного и того же тайла).
+    const gwcReqs = netLog.filter(r => r.url.includes('/gwc/service/wms') && /[?&]request=GetMap/i.test(r.url))
+    const gwcWithCql = gwcReqs.filter(r => r.url.toLowerCase().includes('cql_filter'))
+    record(
+      stepName,
+      highlightReqs.length > 0 && gwcWithCql.length === 0,
+      `запросов_верхнего_слоя_с_cql=${highlightReqs.length} gwc_запросов_всего=${gwcReqs.length} gwc_запросов_с_cql_filter(должно_быть_0)=${gwcWithCql.length}`
+    )
+  }
+
+  // 3.1 Выбор области
+  const oblastSelect = page.locator('.sidebar-section:has-text("Область") select')
+  const oblastOptions = await oblastSelect.locator('option').allTextContents()
+  const targetOblast = oblastOptions.find(o => o !== 'Все области')
+  if (targetOblast) {
+    freshNet('')
+    await oblastSelect.selectOption({ label: targetOblast })
+    await page.waitForTimeout(3000)
+    checkHighlight('3.1. Подсветка — выбор области')
+    // сброс области перед проверкой района отдельно
+    await oblastSelect.selectOption({ label: 'Все области' })
+    await page.waitForTimeout(800)
+  } else {
+    record('3.1. Подсветка — выбор области', true, 'нет доступных областей в списке')
+  }
+
+  // 3.2 Район уже выбран шагом 3 выше — проверяем подсветку по нему
+  if (targetDistrict) {
+    freshNet('')
+    // переизбрать район, чтобы получить свежие сетевые запросы именно для этого шага
+    await districtSelect.selectOption({ label: 'Выберите район' })
+    await page.waitForTimeout(500)
+    await districtSelect.selectOption({ label: targetDistrict })
+    await page.waitForTimeout(3000)
+    checkHighlight('3.2. Подсветка — выбор района')
+  } else {
+    record('3.2. Подсветка — выбор района', true, 'нет доступных районов — шаг 3 уже это отметил')
+  }
+
+  // 3.3 Землепользователь
+  const userSelect = page.locator('.sidebar-section:has-text("Землепользователь") select')
+  const userOptions = await userSelect.locator('option').allTextContents()
+  // "*все*" — псевдо-опция со значением, равным коду района (см. App.jsx,
+  // handleSelectUser) — при уже выбранном районе даёт ТОТ ЖЕ CQL_FILTER,
+  // что и текущее состояние, поэтому слой не перезапрашивается (нет новых
+  // сетевых запросов — это верно, а не баг), и шаг ложно не находит
+  // подтверждения. Берём конкретного землепользователя, не "*все*".
+  const targetUser = userOptions.find(o => o !== 'Выберите землепользователя' && o !== '*все*')
+  if (targetDistrict && targetUser) {
+    freshNet('')
+    await userSelect.selectOption({ label: targetUser })
+    await page.waitForTimeout(3000)
+    checkHighlight('3.3. Подсветка — выбор землепользователя')
+  } else {
+    record('3.3. Подсветка — выбор землепользователя', true, 'нет доступных землепользователей для выбранного района')
+  }
+
+  // 3.4 Снятие выбора — кнопка "сбросить фильтры"
+  freshNet('')
+  await page.locator('.reset-btn').click()
+  await page.waitForTimeout(1500)
+  const afterResetReqs = netLog.filter(r => /[?&]request=GetMap/i.test(r.url) && r.url.toLowerCase().includes('cql_filter') && r.url.includes('/geoserver/pikurr/wms') && !r.url.includes('/gwc/'))
+  const resetErrs = freshConsoleErrors()
+  record(
+    '3.4. Снятие выбора группы',
+    afterResetReqs.length === 0 && resetErrs.length === 0,
+    `запросов_верхнего_слоя_после_сброса(должно_быть_0)=${afterResetReqs.length} консоль_ошибок=${resetErrs.length}`
+  )
+
   // ---- 4. Включение слоя AI-оценки ------------------------------------
   // Чекбокс визуально скрыт (кастомный toggle через `span.toggle-custom`,
   // см. Sidebar.css) — кликаем по самой строке label, `check()` по input

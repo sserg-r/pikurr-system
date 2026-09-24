@@ -36,3 +36,11 @@ export const WPS_BASE_URL = `${GEOSERVER_URL}/geoserver/wps`;
 export const WMS_GWC_BASE_URL = `${GEOSERVER_URL}/geoserver/gwc/service/wms`;
 export const GWC_CACHED_LAYERS = new Set(['pikurr:fields_latest', 'pikurr:image_assessment']);
 
+// round37, блок A: непрозрачность нижнего (фонового) векторного слоя при
+// активном выборе группы (область/район/землепользователь) — поля вне
+// выбора приглушаются, а не скрываются (решение пользователя). Проверено
+// фактом (round37, A1): изменение opacity — чисто клиентское CSS-свойство
+// Leaflet (GridLayer.setOpacity → el.style.opacity), не влияет на URL
+// тайла и не портит попадания в кэш GWC нижнего слоя.
+export const DIMMED_OPACITY = 0.25;
+

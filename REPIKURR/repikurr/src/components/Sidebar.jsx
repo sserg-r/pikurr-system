@@ -12,13 +12,19 @@ export default function Sidebar({
   isOpen, onClose, onReset,
   baseLayer, setBaseLayer,
   usersByDistrict, onSelectUser,
+  // round37, блок A2.1: область — теперь управляемое (не локальное)
+  // состояние, приходит от App вместе с onSelectOblast — иначе сброс
+  // области сменой года (эффект ниже) молча расходился бы с фильтром
+  // группы в App (локальный oblastId сбрасывался, а App.selectedOblast —
+  // нет, подсветка продолжала бы фильтровать по уже неактуальной области).
+  selectedOblast, onSelectOblast,
   showVectors, setShowVectors,
   showMosaic, setShowMosaic,
   statsData,
   availableYears, selectedYear, setSelectedYear,
   districtsByYear,
 }) {
-  const [oblastId, setOblastId]   = useState('');
+  const oblastId = selectedOblast || '';
   const [districtId, setDistrictId] = useState('');
   const [nrUser, setNrUser]       = useState('');
   const [showHelp, setShowHelp]   = useState(false);
@@ -33,7 +39,7 @@ export default function Sidebar({
       onSelectUser('', '');
     }
     if (oblastId && ![...yearSet].some(d => d.substring(0, 2) === oblastId)) {
-      setOblastId('');
+      onSelectOblast?.('');
     }
   }, [selectedYear, districtsByYear]);
 
@@ -64,7 +70,7 @@ export default function Sidebar({
   );
 
   function handleReset() {
-    setOblastId('');
+    onSelectOblast?.('');
     setDistrictId('');
     setNrUser('');
     onSelectUser?.('', '');
@@ -170,10 +176,9 @@ export default function Sidebar({
           value={oblastId}
           onChange={e => {
             const v = e.target.value;
-            setOblastId(v);
+            onSelectOblast?.(v);
             setDistrictId('');
             setNrUser('');
-            onSelectUser('', '');
           }}
         >
           <option value="">Все области</option>

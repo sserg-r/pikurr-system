@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 import 'leaflet/dist/leaflet.css'
 import Sidebar from './components/Sidebar'
 import MapView from './components/MapView'
 import WmsLegend from './components/WmsLegend'
-import { getBboxByUser, getStatsByUser, getAllUsers, loadYearDistrictData } from './services/geoserver'
+import { getBboxByUser, getStatsByUser, getAllUsers, loadYearDistrictData, getFeatureCount } from './services/geoserver'
 import { FiMenu } from 'react-icons/fi'
 
 function App() {
@@ -14,6 +14,15 @@ function App() {
   const [usersByDistrict, setUsersByDistrict] = useState({})
   const [selectedUser, setSelectedUser] = useState('')
   const [selectedDistrict, setSelectedDistrict] = useState('')
+  // round37, блок A2.1: третий уровень выбора — область (2-значный префикс
+  // nr_user, тот же смысл, что и у района/землепользователя — LIKE-префикс
+  // кода, см. handleSelectOblast).
+  const [selectedOblast, setSelectedOblast] = useState('')
+  // round37, блок A2.6: true, если у активной группы (область/район/
+  // землепользователь) нет полей за текущий год — WFS resultType=hits
+  // вернул 0 (см. эффект ниже). Показываем внятное сообщение вместо
+  // пустой карты вместо того, чтобы молча зумить в никуда.
+  const [groupEmpty, setGroupEmpty] = useState(false)
   const [showVectors, setShowVectors] = useState(true)
   const [showMosaic, setShowMosaic] = useState(false)
   const [availableYears, setAvailableYears] = useState([])
@@ -110,6 +119,7 @@ function App() {
   function handleReset() {
     setSelectedUser('')
     setSelectedDistrict('')
+    setSelectedOblast('')
     setBbox(null)
     setStats(null)
     // round29, блок C: null, не конкретный последний год — та же
@@ -118,19 +128,42 @@ function App() {
     setSelectedYear(null)
   }
 
+  // round37, блок A2.1: выбор области — верхний уровень группировки, тот
+  // же смысл LIKE-префикса, что у района ('2208') и землепользователя
+  // (полный код) — nr_user начинается с 2-значного кода области (см.
+  // constants.js: oblasts), поэтому `nr_user LIKE '<oblast>%'` работает
+  // без изменений в шаблонах WPS (getbboxbyuser.xml подставляет
+  // {{CQL_FILTER}} как обычный префикс, не как готовое CQL-выражение —
+  // проверено фактом, round37 A1).
+  async function handleSelectOblast(oblastId) {
+    setSelectedOblast(oblastId)
+    setSelectedDistrict('')
+    setSelectedUser('')
+    try {
+      if (oblastId) {
+        const b = await getBboxByUser(oblastId)
+        setBbox(b)
+        const data = await getStatsByUser(oblastId)
+        setStats(data)
+      } else {
+        setBbox(null)
+        setStats(null)
+      }
+    } catch (e) { console.error(e) }
+  }
+
   // автодействия при выборе пользователя
   async function handleSelectUser(userCode, districtId) {
     setSelectedUser(userCode)
     setSelectedDistrict(districtId !== undefined ? districtId : selectedDistrict)
     const isAll = userCode === '*'
-    const cql = isAll && (districtId || selectedDistrict)
-      ? `nr_user LIKE '${(districtId || selectedDistrict)}%'`
-      : userCode
-        ? `nr_user LIKE '${userCode}%'`
-        : ''
     // bbox & stats
     const effectiveCode = isAll ? (districtId || selectedDistrict) : userCode
-    const zoomCode = effectiveCode || districtId  // зум к району даже если юзер не выбран
+    // round37, блок A2.1: если район/землепользователь сброшены (пусто), а
+    // область всё ещё выбрана — падаем обратно на область, а не оставляем
+    // карту в устаревшем виде (без этого снятие района "терялось" бы, пока
+    // не снята и область явно).
+    const zoomCode = effectiveCode || districtId || selectedOblast  // зум к району даже если юзер не выбран
 
     try {
       if (zoomCode) {
@@ -142,21 +175,46 @@ function App() {
     } catch (e) { console.error(e) }
 
     try {
-      if (effectiveCode) {
-        const data = await getStatsByUser(effectiveCode)
+      const statsCode = effectiveCode || selectedOblast
+      if (statsCode) {
+        const data = await getStatsByUser(statsCode)
         setStats(data)
       } else {
         setStats(null)
       }
     } catch (e) { console.error(e) }
   }
-  const cqlExpr = (() => {
-    const parts = []
-    if (selectedYear) parts.push(`year = ${selectedYear}`)
-    if (selectedUser) parts.push(`nr_user LIKE '${selectedUser}%'`)
-    else if (selectedDistrict) parts.push(`nr_user LIKE '${selectedDistrict}%'`)
-    return parts.length ? parts.join(' AND ') : undefined
-  })()
+  // round37, блок A2.1/A2.2: разделены год (фильтр фонового слоя — не
+  // меняется при выборе группы, сохраняет попадания GWC) и группа
+  // (область/район/землепользователь — фильтр верхнего слоя-подсветки,
+  // приоритет — самый конкретный уровень из выбранных). `highlightCqlExpr`
+  // (год+группа) — то же выражение, что и раньше использовалось для
+  // всплывающей карточки (FeatureInfo), поведение клика не меняется.
+  const yearCqlExpr = selectedYear ? `year = ${selectedYear}` : undefined
+  const groupCqlExpr = selectedUser
+    ? `nr_user LIKE '${selectedUser}%'`
+    : selectedDistrict
+      ? `nr_user LIKE '${selectedDistrict}%'`
+      : selectedOblast
+        ? `nr_user LIKE '${selectedOblast}%'`
+        : undefined
+  const highlightCqlExpr = [yearCqlExpr, groupCqlExpr].filter(Boolean).join(' AND ') || undefined
+  const vectorTypeName = selectedYear ? 'pikurr:fields' : 'pikurr:fields_latest'
+
+  // round37, блок A2.6: если в выбранной группе нет полей за текущий год —
+  // явное сообщение вместо пустой карты. Пересчитывается при смене группы
+  // или года; сброс группы снимает баннер.
+  useEffect(() => {
+    let cancelled = false
+    if (!groupCqlExpr) {
+      setGroupEmpty(false)
+      return
+    }
+    getFeatureCount(vectorTypeName, groupCqlExpr)
+      .then(n => { if (!cancelled) setGroupEmpty(n === 0) })
+      .catch(e => { console.error(e); if (!cancelled) setGroupEmpty(false) })
+    return () => { cancelled = true }
+  }, [groupCqlExpr, vectorTypeName])
 
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
@@ -168,6 +226,8 @@ function App() {
         setBaseLayer={setBaseLayer}
         usersByDistrict={usersByDistrict}
         onSelectUser={handleSelectUser}
+        selectedOblast={selectedOblast}
+        onSelectOblast={handleSelectOblast}
         showVectors={showVectors}
         setShowVectors={setShowVectors}
         showMosaic={showMosaic}
@@ -205,11 +265,21 @@ function App() {
             <FiMenu size={20} />
           </button>
         )}
+        {groupEmpty && (
+          <div style={{
+            position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 1000, background: '#fff3cd', border: '1px solid #ffcc00',
+            borderRadius: 6, padding: '8px 16px', boxShadow: '0 2px 6px rgba(0,0,0,0.15)', fontSize: 14,
+          }}>
+            В выбранной группе нет полей{selectedYear ? ` за ${selectedYear} год` : ''}.
+          </div>
+        )}
         <MapView
           baseLayer={baseLayer}
           bbox={bbox}
           maxYear={availableYears.length > 0 ? availableYears[availableYears.length - 1] : null}
-          cqlExpr={cqlExpr}
+          cqlExpr={yearCqlExpr}
+          highlightCqlExpr={groupCqlExpr ? highlightCqlExpr : undefined}
           showVectors={showVectors}
           showMosaic={showMosaic}
           selectedYear={selectedYear}

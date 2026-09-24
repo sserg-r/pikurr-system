@@ -197,6 +197,52 @@ def check_gwc_layers(base_url: str, checks: list):
                 f"HTTP {resp.status_code}, {detail}, geowebcache-cache-result={cache_result}", checks)
 
 
+def check_filtered_layer(base_url: str, checks: list):
+    """round37, блок A4.3: подсветка выбранной группы стала штатной частью
+    витрины (см. CLAUDE.md, "Подсветка выбранной группы") — верхний слой
+    всегда идёт через обычный `/geoserver/pikurr/wms` с `CQL_FILTER`
+    (никогда через GWC, см. запись в "Ловушки"). Проверяем ровно этот
+    путь тем же CQL-шаблоном, что строит фронтенд для уровня "район"
+    (App.jsx: `nr_user LIKE '<код>%'`), на заведомо непустом тайле."""
+    district = os.getenv("FILTERED_LAYER_DISTRICT", "2208")
+    try:
+        tiles = _load_tiles_with_data()
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        _check("filtered_layer", False,
+                f"{_tiles_with_data_path()} недоступен ({e}) — задать "
+                f"TILES_WITH_DATA_PATH или скопировать файл при деплое", checks)
+        return
+    tile = tiles[0]
+    z = tile["z"]
+    x, y = _lonlat_to_tile(tile["lon"], tile["lat"], z)
+    bbox_str = ",".join(str(v) for v in _tile_bbox_3857(x, y, z))
+    cql = urllib.parse.quote(f"nr_user LIKE '{district}%'")
+
+    url = (
+        f"{base_url}/geoserver/{GEOSERVER_WORKSPACE}/wms"
+        "?service=WMS&version=1.1.1&request=GetMap"
+        f"&layers={GEOSERVER_WORKSPACE}:fields_latest&styles=&format=image/png"
+        f"&transparent=true&width=256&height=256&srs=EPSG:3857&bbox={bbox_str}"
+        f"&CQL_FILTER={cql}"
+    )
+    try:
+        resp = requests.get(url, timeout=15)
+    except requests.RequestException as e:
+        _check("filtered_layer", False, f"запрос не выполнен: {e}", checks)
+        return
+
+    body = resp.content
+    if b"ServiceExceptionReport" in body or b"ExceptionReport" in body:
+        _check("filtered_layer", False,
+                f"HTTP {resp.status_code}, тело — ServiceExceptionReport "
+                f"(код может быть 200 — это НЕ признак успеха): {body[:200]}", checks)
+        return
+
+    ok, detail = _png_has_nonempty_colors(body)
+    _check("filtered_layer", ok,
+            f"HTTP {resp.status_code}, район={district}, {detail}", checks)
+
+
 def check_wfs(base_url: str, checks: list):
     url = (
         f"{base_url}/geoserver/{GEOSERVER_WORKSPACE}/ows"
@@ -373,6 +419,7 @@ def run_healthcheck(base_url: str) -> dict:
     checks: list = []
     check_wms(base_url, checks)
     check_gwc_layers(base_url, checks)
+    check_filtered_layer(base_url, checks)
     check_wfs(base_url, checks)
     check_error_path(base_url, checks)
     check_main_page(base_url, checks)

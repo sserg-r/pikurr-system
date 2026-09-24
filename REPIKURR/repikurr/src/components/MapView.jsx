@@ -1,6 +1,6 @@
 import 'leaflet/dist/leaflet.css'
 import { MapContainer, TileLayer, WMSTileLayer, ZoomControl, AttributionControl, Popup, useMap, useMapEvents } from 'react-leaflet'
-import { WMS_BASE_URL, WMS_GWC_BASE_URL, GWC_CACHED_LAYERS } from '../constants'
+import { WMS_BASE_URL, WMS_GWC_BASE_URL, GWC_CACHED_LAYERS, DIMMED_OPACITY } from '../constants'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './MapView.css'
 
@@ -166,7 +166,7 @@ function CoordBar({ coords }) {
 }
 
 /* ---- MapView ---- */
-export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMosaic, selectedYear, maxYear, dataVersion }) {
+export default function MapView({ baseLayer, bbox, cqlExpr, highlightCqlExpr, showVectors, showMosaic, selectedYear, maxYear, dataVersion }) {
   const initialCenter = useMemo(() => [55.2, 29.6], [])
   // round29, блок C: раньше cacheBuster (и вместе с ним весь параметр
   // `time` в URL тайла) существовал ТОЛЬКО когда был активен CQL-фильтр
@@ -189,7 +189,19 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
   // до ответа `/static/year_district.json`) — используем 'loading' как
   // временное значение, а не `Date.now()`, чтобы не создавать одноразовый
   // уникальный URL даже на долю секунды.
-  const cacheBuster   = dataVersion || 'loading'
+  // round37, блок A (побочная находка): `cacheBuster` раньше ВСЕГДА
+  // подставлялся в WMS-параметр `time`, включая плейсхолдер 'loading' до
+  // ответа `/static/year_district.json` — GeoServer трактует `time` как
+  // WMS-размерность TIME и пытается распарсить значение как дату;
+  // 'loading' не дата, поэтому в этом (обычно узком) окне сервер отвечал
+  // `200` с `ServiceExceptionReport` (та самая ловушка "200 ≠ успех" из
+  // CLAUDE.md) — тайл падал в ошибку. Раньше это било только по
+  // историчному слою `fields` (виден при выбранном годе), round37 добавил
+  // второй потребитель (верхний слой-подсветка), заметно расширив окно
+  // проявления при разработке. Правильное исправление — не передавать
+  // `time` вовсе, пока версия ещё не известна, а не бороться со
+  // следствием на каждом потребителе.
+  const cacheBuster   = dataVersion || null
   const [clickCoords, setClickCoords] = useState(null)
 
   const vectorLayer = selectedYear ? 'pikurr:fields' : 'pikurr:fields_latest'
@@ -244,7 +256,7 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
   const wmsVectorParams = useMemo(
     () => ({
       ...(cqlExpr ? { CQL_FILTER: cqlExpr } : {}),
-      time: cacheBuster,
+      ...(cacheBuster ? { time: cacheBuster } : {}),
       ...(vectorIsCached ? { tiled: true } : {}),
     }),
     [cqlExpr, cacheBuster, vectorIsCached]
@@ -253,6 +265,25 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
     () => (rasterIsCached ? { tiled: true } : {}),
     [rasterIsCached]
   )
+
+  // round37, блок A2: верхний слой-подсветка выбранной группы (область/
+  // район/землепользователь). Проверено фактом (round37, A1): GWC
+  // (`/geoserver/gwc/service/wms`) полностью игнорирует CQL_FILTER и
+  // STYLES — отдаёт байт-в-байт тот же закэшированный тайл независимо от
+  // них, поэтому верхний слой идёт ТОЛЬКО через обычный `/geoserver/pikurr/wms`
+  // (WMS_BASE_URL), никогда через GWC. Нижний (фоновый) слой не трогаем —
+  // он продолжает идти прежним путём (GWC, когда кэшируем) с фильтром
+  // ТОЛЬКО по году (без группы), чтобы не срывать попадания кэша.
+  const isSelectionActive = Boolean(highlightCqlExpr)
+  const wmsHighlightParams = useMemo(
+    () => (highlightCqlExpr
+      ? { CQL_FILTER: highlightCqlExpr, ...(cacheBuster ? { time: cacheBuster } : {}) }
+      : undefined),
+    [highlightCqlExpr, cacheBuster]
+  )
+  // Всплывающая карточка и клик продолжают учитывать выбранную группу —
+  // тот же фильтр, что и у верхнего слоя (год+группа), не только год.
+  const featureInfoCqlExpr = highlightCqlExpr ?? cqlExpr
 
   return (
     <div style={{ position: 'relative', height: '100%', width: '100%' }}>
@@ -266,7 +297,7 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
         <AttributionControl position="bottomright" prefix={false} />
         <ZoomControl position="topright" />
         <FitBounds bbox={bbox} />
-        <FeatureInfo layerName={vectorLayer} cqlExpr={cqlExpr} onMapClick={setClickCoords} />
+        <FeatureInfo layerName={vectorLayer} cqlExpr={featureInfoCqlExpr} onMapClick={setClickCoords} />
 
         {baseLayer === 'osm' && (
           <TileLayer zIndex={100}
@@ -293,7 +324,19 @@ export default function MapView({ baseLayer, bbox, cqlExpr, showVectors, showMos
           <WMSTileLayer key={`${vectorLayer}-${reloadNonce}`} zIndex={500}
             url={vectorWmsUrl} version="1.1.1"
             layers={vectorLayer} format="image/png" transparent
+            opacity={isSelectionActive ? DIMMED_OPACITY : 1}
             params={wmsVectorParams}
+            eventHandlers={{ tileerror: handleTileError }} />
+        )}
+        {/* round37, блок A2.3: отдельный слой поверх фонового — порядок
+            отрисовки (React монтирует после, zIndex выше) гарантирует, что
+            выбранные поля рисуются полноценно СВЕРХ своих же приглушённых
+            копий из фонового слоя, а не смешиваются с ними. */}
+        {showVectors && isSelectionActive && (
+          <WMSTileLayer key={`highlight-${vectorLayer}-${highlightCqlExpr}-${reloadNonce}`} zIndex={600}
+            url={WMS_BASE_URL} version="1.1.1"
+            layers={vectorLayer} format="image/png" transparent
+            params={wmsHighlightParams}
             eventHandlers={{ tileerror: handleTileError }} />
         )}
       </MapContainer>

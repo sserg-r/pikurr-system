@@ -74,6 +74,23 @@ export async function loadYearDistrictData() {
   return { years, districtsByYear: map, dataVersion: json.dataVersion || null }
 }
 
+// round37, блок A2.6: подсчёт объектов в выбранной группе (WFS
+// resultType=hits — сервер считает без выгрузки геометрии). Используется,
+// чтобы показать внятное сообщение вместо пустой карты, когда в
+// выбранной группе (область/район/землепользователь) нет полей за
+// текущий год. Проверено фактом на VPS (round37, A1): numberMatched
+// присутствует в ответе и для пустого, и для непустого результата.
+export async function getFeatureCount(typeName, cqlFilter) {
+  const params = new URLSearchParams({
+    service: 'WFS', version: '2.0.0', request: 'GetFeature',
+    typeNames: typeName, resultType: 'hits',
+  })
+  if (cqlFilter) params.set('CQL_FILTER', cqlFilter)
+  const text = await fetchText(`${WFS_BASE_URL}?${params}`)
+  const m = text.match(/numberMatched="(\d+)"/)
+  return m ? Number(m[1]) : null
+}
+
 export function getLegendUrl(layer) {
   const url = `${WMS_BASE_URL}?SERVICE=WMS&REQUEST=GetLegendGraphic&FORMAT=image/png&LAYER=${encodeURIComponent(layer)}`
   return url
