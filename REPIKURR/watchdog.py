@@ -32,6 +32,7 @@ PID_FILE   = SCRIPT_DIR / "watchdog.pid"
 LOCK_FILE  = SCRIPT_DIR / "watchdog.lock"
 LOG_FILE   = SCRIPT_DIR / "watchdog.log"
 POLL_SECS  = 10   # частота проверки
+STABLE_CHECK_DELAY = 2.0  # секунды между двумя замерами размера файла
 
 # ---------------------------------------------------------------------------
 logging.basicConfig(
@@ -125,6 +126,37 @@ def _file_key(path: Path):
     return (path.name, st.st_size, st.st_mtime)
 
 
+def _is_stable(path: Path, delay: float = STABLE_CHECK_DELAY) -> bool:
+    """round39, блок C: файл считается дописанным, если его размер не
+    меняется между двумя замерами с паузой.
+
+    Без этого watchdog подхватывает ZIP, который отправитель (`cp`/`scp`)
+    ещё пишет на диск — glob по `inbox/` видит файл сразу, как только он
+    появился в каталоге, независимо от того, дописан он или нет.
+    `deliver.py` тогда получает частично записанный архив и падает с
+    «File is not a zip file» (round38, блок C2 — два подряд ложных
+    отказа несмотря на верную контрольную сумму итогового файла;
+    та же подпись — `pikurr_update_2025_b5test_2026-09-21_00-00.zip`,
+    round21). Выбор — сравнение размера с паузой, а не переименование
+    после записи или файл-маркер готовности: оба других варианта требуют
+    участия отправляющей стороны (изменения ВСЕХ мест, что кладут пакет
+    в inbox — ручной `cp`/`scp`, будущие скрипты доставки), а проверка
+    стабильности размера работает для ЛЮБОГО способа доставки файла,
+    не требуя ничьей кооперации. Цена — до `STABLE_CHECK_DELAY` секунд
+    задержки перед подхватом нового файла, пренебрежимо на фоне полного
+    цикла доставки (минуты)."""
+    try:
+        size1 = path.stat().st_size
+    except OSError:
+        return False
+    time.sleep(delay)
+    try:
+        size2 = path.stat().st_size
+    except OSError:
+        return False  # исчез между замерами — не наша забота, объявится снова, если это ещё запись
+    return size1 == size2
+
+
 def main():
     INBOX.mkdir(parents=True, exist_ok=True)
     lock_fd = _acquire_lock()  # держим ссылку — см. docstring _acquire_lock
@@ -149,6 +181,15 @@ def main():
         for zip_path in sorted(INBOX.glob("pikurr_update_*.zip")):
             key = _file_key(zip_path)
             if key is not None and key not in seen:
+                if not _is_stable(zip_path):
+                    logger.info(f"{zip_path.name}: размер ещё меняется — жду следующего опроса.")
+                    continue
+                # Пересчитываем ключ ПОСЛЕ проверки стабильности — если файл
+                # дозаписался между первым stat() и этой строкой, mtime/size
+                # изменились, и `seen` не должен запомнить устаревший ключ.
+                key = _file_key(zip_path)
+                if key is None or key in seen:
+                    continue
                 seen.add(key)
                 try:
                     process_zip(zip_path, extra_env)

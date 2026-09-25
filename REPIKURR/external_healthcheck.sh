@@ -10,7 +10,12 @@
 # иначе была бы одним "постоянным false positive" в каждом внешнем прогоне,
 # round33, блок A3 наблюдал этот же эффект локально). Остальные 4 проверки
 # (wms_getmap, wfs_getfeature, main_page, year_district_json) не требуют
-# доступа к БД и полностью пригодны для внешнего запуска.
+# доступа к БД и полностью пригодны для внешнего запуска. `disk_space`
+# (round39, блок D4) добавлена в `healthcheck.py` тем же принципом —
+# исключена здесь по той же причине, только наоборот: она проверяет
+# диск ТОЙ машины, где запущен сам скрипт, значит с эмулятора
+# отчиталась бы про диск эмулятора, а не VPS — бессмысленно и вводит
+# в заблуждение при внешнем запуске.
 
 set -u
 
@@ -40,7 +45,7 @@ import json, sys
 ts, log_path = sys.argv[1], sys.argv[2]
 data = json.load(sys.stdin)
 checks = data.get('checks', [])
-relevant = [c for c in checks if c.get('check') != 'db_matches_static']
+relevant = [c for c in checks if c.get('check') not in ('db_matches_static', 'disk_space')]
 failed = [c['check'] for c in relevant if not c.get('ok')]
 status = 'RED' if failed else 'GREEN'
 with open(log_path, 'a') as f:

@@ -21,6 +21,7 @@ import argparse
 import io
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -415,6 +416,35 @@ def check_db_matches_static(static_data, checks: list):
     _check("db_matches_static", ok, detail, checks)
 
 
+def check_disk_space(checks: list):
+    """round39, блок D4: свободное место на диске той машины, где реально
+    выполняется `deliver.py` (не прод-домена — эта проверка локальная,
+    смысла нет вызывать её с другого хоста, в отличие от остальных
+    проверок в этом файле).
+
+    round39, блок D: на VPS НЕТ ни systemd-таймера, ни cron, который
+    когда-либо запускал бы `deliver.py --cleanup` — карантинные
+    каталоги `_removed_*`, `status/*.json`, `failed/*.zip` растут
+    неограниченно; round38 добавил ещё один растущий потребитель —
+    `backups/*.dump` (D3, ротация по ЧИСЛУ файлов, не по занятому
+    объёму). Порог по умолчанию — `DISK_FREE_MIN_GB=3` (обоснование —
+    docs/round39-cleanup.md, блок D: крупнейший наблюдённый разовый
+    прирост — карантинная копия растрового года, ~560 МБ; порог даёт
+    запас больше чем 5x на случай нескольких доставок подряд без
+    очистки)."""
+    path = os.getenv("DISK_CHECK_PATH", str(Path(__file__).resolve().parent))
+    threshold_gb = float(os.getenv("DISK_FREE_MIN_GB", "3"))
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError as e:
+        _check("disk_space", False, f"не удалось прочитать использование диска {path}: {e}", checks)
+        return
+    free_gb = usage.free / (1024 ** 3)
+    ok = free_gb >= threshold_gb
+    detail = f"{free_gb:.2f} ГБ свободно на {path} (порог {threshold_gb:.1f} ГБ)"
+    _check("disk_space", ok, detail, checks)
+
+
 def run_healthcheck(base_url: str) -> dict:
     checks: list = []
     check_wms(base_url, checks)
@@ -425,6 +455,7 @@ def run_healthcheck(base_url: str) -> dict:
     check_main_page(base_url, checks)
     static_data = check_year_district(base_url, checks)
     check_db_matches_static(static_data, checks)
+    check_disk_space(checks)
 
     all_ok = all(c["ok"] for c in checks)
     return {"ok": all_ok, "checks": checks}
