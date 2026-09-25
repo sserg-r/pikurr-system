@@ -37,6 +37,18 @@ async function main() {
   const browser = await chromium.launch({ headless: HEADLESS })
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
 
+  // round41, блок D: шаги 3.1-3.3 («Подсветка») ложно падали два раунда
+  // подряд с gwc_запросов_всего=0 — причина установлена фактом (отдельный
+  // диагностический прогон с логом всех сетевых запросов и явным
+  // отключением кэша через CDP, разница — 0 запросов против полного
+  // набора): к этим поздним шагам многие тайлы (тот же bbox/CQL_FILTER/year) уже
+  // запрашивались на более ранних шагах того же прогона, и Chromium
+  // отдаёт их из собственного HTTP-кэша без сетевого события — сценарий
+  // проверяет РЕАЛЬНЫЙ трафик браузера, а не срабатывание фронтенда,
+  // поэтому кэш браузера отключается для честной проверки на каждом шаге.
+  const cdpSession = await page.context().newCDPSession(page)
+  await cdpSession.send('Network.setCacheDisabled', { cacheDisabled: true })
+
   const consoleErrors = []
   page.on('console', msg => {
     if (msg.type() === 'error') consoleErrors.push(msg.text())
@@ -173,7 +185,7 @@ async function main() {
   if (targetOblast) {
     freshNet('')
     await oblastSelect.selectOption({ label: targetOblast })
-    await page.waitForTimeout(3000)
+    await page.waitForTimeout(5000)
     checkHighlight('3.1. Подсветка — выбор области')
     // сброс области перед проверкой района отдельно
     await oblastSelect.selectOption({ label: 'Все области' })
@@ -189,7 +201,7 @@ async function main() {
     await districtSelect.selectOption({ label: 'Выберите район' })
     await page.waitForTimeout(500)
     await districtSelect.selectOption({ label: targetDistrict })
-    await page.waitForTimeout(3000)
+    await page.waitForTimeout(5000)
     checkHighlight('3.2. Подсветка — выбор района')
   } else {
     record('3.2. Подсветка — выбор района', true, 'нет доступных районов — шаг 3 уже это отметил')
@@ -207,7 +219,7 @@ async function main() {
   if (targetDistrict && targetUser) {
     freshNet('')
     await userSelect.selectOption({ label: targetUser })
-    await page.waitForTimeout(3000)
+    await page.waitForTimeout(5000)
     checkHighlight('3.3. Подсветка — выбор землепользователя')
   } else {
     record('3.3. Подсветка — выбор землепользователя', true, 'нет доступных землепользователей для выбранного района')
