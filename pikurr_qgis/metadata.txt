@@ -4,7 +4,7 @@
 
 [general]
 name=pikurr
-qgisMinimumVersion=3.0
+qgisMinimumVersion=3.44
 qgisMaximumVersion=3.99
 description=Доступ к данным геоботанической оценки сельскохозяйственных угодий ПИК УРР (районы, землепользователи, слои полей и AI-оценки, статистика площадей по сценариям)
 version=1.2.0
