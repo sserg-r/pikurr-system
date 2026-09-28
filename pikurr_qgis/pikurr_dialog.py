@@ -42,7 +42,7 @@ class pikurrDialog(QtWidgets.QDialog, FORM_CLASS):
         # http://qt-project.org/doc/qt-4.8/designer-using-a-ui-file.html
         # #widgets-and-dialogs-with-auto-connect
         self.setupUi(self)
-        self.setFixedSize(370,270)
+        self.setFixedSize(380, 368)
         self.buttonGroup.setExclusive(False)
         self.baseButton.setChecked(False)
         self.esriButton.setChecked(False)

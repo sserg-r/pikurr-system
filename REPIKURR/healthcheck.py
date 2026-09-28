@@ -360,6 +360,30 @@ def check_year_district(base_url: str, checks: list) -> dict | None:
     return data
 
 
+def check_districts_ref(base_url: str, checks: list):
+    """round47, блок A2/B4: справочник код->название района, который
+    отдаёт плагин QGIS вместо собственной зашитой копии
+    (`REPIKURR/tools/gen_districts_ref.py`, источник — constants.js
+    фронтенда). Проверяет только наличие и валидность содержимого на
+    проде — сверку с исходником делает `gen_districts_ref.py --check`
+    отдельно (запускается там, где есть исходники, не на самой VPS)."""
+    try:
+        resp = requests.get(base_url + "/districts_ref.json", timeout=15)
+    except requests.RequestException as e:
+        _check("districts_ref_json", False, f"запрос не выполнен: {e}", checks)
+        return
+    try:
+        data = resp.json()
+    except ValueError:
+        _check("districts_ref_json", False,
+                f"HTTP {resp.status_code}, тело не парсится как JSON", checks)
+        return
+    districts = data.get("districts") if isinstance(data, dict) else None
+    ok = resp.status_code == 200 and bool(districts)
+    _check("districts_ref_json", ok,
+            f"HTTP {resp.status_code}, районов: {len(districts) if districts else 0}", checks)
+
+
 def _static_year_district_pairs(static_data) -> set:
     """Разворачивает {"years":[...], "districtsByYear": {"y": [d,...]}}
     в множество пар (year:int, district:str)."""

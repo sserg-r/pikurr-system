@@ -5,27 +5,39 @@
 [general]
 name=pikurr
 qgisMinimumVersion=3.0
-description=отображение данных pikurr
-version=0.1
+qgisMaximumVersion=3.99
+description=Доступ к данным геоботанической оценки сельскохозяйственных угодий ПИК УРР (районы, землепользователи, слои полей и AI-оценки, статистика площадей по сценариям)
+version=1.1.0
 author=ss
 email=xx@yy.zz
 
-about=Provide a brief description of the plugin and its purpose.
+about=Плагин показывает данные ПИК УРР (https://geobotany.of.by) прямо в
+    QGIS: выбор области/района/землепользователя, добавление векторного
+    слоя полей и растрового слоя AI-оценки, статистика площадей по
+    сценариям использования. Адрес сервера по умолчанию — боевой прод по
+    HTTPS, можно переопределить в диалоге плагина для локальной разработки.
 
-tracker=http://bugs
-repository=http://repo
+tracker=TODO-указать-репозиторий-организации/issues
+repository=TODO-указать-репозиторий-организации
 # End of mandatory metadata
 
 # Recommended items:
 
 hasProcessingProvider=no
-# Uncomment the following line and add your changelog:
-# changelog=
+changelog=1.1.0 (round47):
+    - адрес сервера — явная настройка (прод по умолчанию по HTTPS),
+      убрано угадывание localhost/несуществующего домена;
+    - добавлен уровень "область" к район/землепользователь;
+    - справочник названий районов — с сервера, не зашит в плагин;
+    - сетевые ошибки и ServiceExceptionReport не роняют диалог;
+    - убран сгенерированный resources.py (жёстко требовал PyQt5) —
+      иконка и WPS-шаблоны грузятся из обычных файлов, совместимо с Qt6.
+    1.0 (2024-2025): первая рабочая версия (не версионировалась явно).
 
 # Tags are comma separated with spaces allowed
-tags=python
+tags=python,WMS,WFS,геоботаника,сельское хозяйство
 
-homepage=http://homepage
+homepage=https://geobotany.of.by
 category=Plugins
 icon=icon_2.png
 # experimental flag

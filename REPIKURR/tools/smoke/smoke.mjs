@@ -19,6 +19,7 @@ import { chromium } from 'playwright'
 import { writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { createHash } from 'node:crypto'
 
 const BASE_URL = process.env.BASE_URL || 'https://geobotany.of.by'
 const HEADLESS = process.env.HEADLESS !== 'false'
@@ -482,6 +483,31 @@ async function main() {
     `zip: код=${zipCheck.status} тип="${zipCheck.ct}" размер=${zipCheck.len} | ` +
       `readme: код=${readmeCheck.status} тип="${readmeCheck.ct}" размер=${readmeCheck.len}`
   )
+
+  // ---- 13b. Дрейф публикуемого архива от контрольной суммы (round47, B4.2) --
+  // pikurr_qgis.zip собирается REPIKURR/tools/build_qgis_plugin.py, который
+  // публикует рядом pikurr_qgis.sha256 — сверяем фактическое тело архива с
+  // этой суммой на самом проверяемом домене, чтобы дрейф (кто-то заменил
+  // zip руками, не пересобрав) ловился автоматически, а не тихо.
+  let shaDriftOk = false
+  let shaDriftDetail = 'пропущено'
+  try {
+    const zipResp = await page.request.get(`${BASE_URL}/pikurr_qgis.zip`)
+    const shaResp = await page.request.get(`${BASE_URL}/pikurr_qgis.sha256`)
+    if (zipResp.ok() && shaResp.ok()) {
+      const zipBytes = await zipResp.body()
+      const actualSha = createHash('sha256').update(zipBytes).digest('hex')
+      const publishedShaLine = (await shaResp.text()).trim()
+      const publishedSha = publishedShaLine.split(/\s+/)[0]
+      shaDriftOk = actualSha === publishedSha
+      shaDriftDetail = `опубликован=${publishedSha.slice(0, 12)}... факт=${actualSha.slice(0, 12)}...`
+    } else {
+      shaDriftDetail = `zip код=${zipResp.status()}, sha256 код=${shaResp.status()}`
+    }
+  } catch (e) {
+    shaDriftDetail = `ошибка: ${e.message}`
+  }
+  record('13b. pikurr_qgis.zip соответствует pikurr_qgis.sha256', shaDriftOk, shaDriftDetail)
 
   await browser.close()
 

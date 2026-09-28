@@ -9,8 +9,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>370</width>
-    <height>270</height>
+    <width>380</width>
+    <height>368</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -22,11 +22,131 @@
   <property name="windowTitle">
    <string>pikurr</string>
   </property>
+
+  <!-- round47, блок A1.2: адрес сервера — настройка, не угадывание.
+       По умолчанию заполняется прод-адресом (pikurr.py), можно
+       переопределить для локальной разработки; значение хранится в
+       QSettings между запусками QGIS (geoserver_client.py). -->
+  <widget class="QLabel" name="labelServer">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>6</y>
+     <width>75</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Сервер:</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="serverUrlEdit">
+   <property name="geometry">
+    <rect>
+     <x>95</x>
+     <y>4</y>
+     <width>195</width>
+     <height>22</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="serverApplyButton">
+   <property name="geometry">
+    <rect>
+     <x>295</x>
+     <y>4</y>
+     <width>65</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Применить</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="serverStatusLabel">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>28</y>
+     <width>340</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string></string>
+   </property>
+   <property name="wordWrap">
+    <bool>false</bool>
+   </property>
+  </widget>
+
+  <!-- round47, блок A2.3: уровень «область» добавлен над районом. -->
+  <widget class="QLabel" name="labelOblast">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>52</y>
+     <width>171</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>область</string>
+   </property>
+  </widget>
+  <widget class="QComboBox" name="comboOblast">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>70</y>
+     <width>221</width>
+     <height>28</height>
+    </rect>
+   </property>
+  </widget>
+
+  <widget class="QLabel" name="label_5">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>104</y>
+     <width>171</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>административный район</string>
+   </property>
+  </widget>
+  <widget class="QComboBox" name="comboDistr">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>122</y>
+     <width>221</width>
+     <height>28</height>
+    </rect>
+   </property>
+  </widget>
+
+  <widget class="QLabel" name="label">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>156</y>
+     <width>171</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>землепользователь</string>
+   </property>
+  </widget>
   <widget class="QComboBox" name="comboUsers">
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>85</y>
+     <y>174</y>
      <width>221</width>
      <height>31</height>
     </rect>
@@ -35,14 +155,28 @@
   <widget class="QPushButton" name="addvecButton">
    <property name="geometry">
     <rect>
-     <x>240</x>
-     <y>85</y>
-     <width>51</width>
+     <x>245</x>
+     <y>174</y>
+     <width>115</width>
      <height>31</height>
     </rect>
    </property>
    <property name="text">
-    <string>ok</string>
+    <string>добавить слои</string>
+   </property>
+  </widget>
+
+  <widget class="QLabel" name="label_2">
+   <property name="geometry">
+    <rect>
+     <x>300</x>
+     <y>52</y>
+     <width>68</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>подложка</string>
    </property>
   </widget>
   <widget class="QRadioButton" name="esriButton">
@@ -52,7 +186,7 @@
    <property name="geometry">
     <rect>
      <x>300</x>
-     <y>20</y>
+     <y>70</y>
      <width>61</width>
      <height>21</height>
     </rect>
@@ -67,6 +201,28 @@
     <string notr="true">buttonGroup</string>
    </attribute>
   </widget>
+  <widget class="QRadioButton" name="osmButton">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>300</x>
+     <y>94</y>
+     <width>61</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>osm</string>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <attribute name="buttonGroup">
+    <string notr="true">buttonGroup</string>
+   </attribute>
+  </widget>
   <widget class="QRadioButton" name="baseButton">
    <property name="enabled">
     <bool>true</bool>
@@ -74,7 +230,7 @@
    <property name="geometry">
     <rect>
      <x>300</x>
-     <y>60</y>
+     <y>118</y>
      <width>61</width>
      <height>21</height>
     </rect>
@@ -89,86 +245,16 @@
     <string notr="true">buttonGroup</string>
    </attribute>
   </widget>
-  <widget class="QLabel" name="label">
-   <property name="geometry">
-    <rect>
-     <x>30</x>
-     <y>65</y>
-     <width>141</width>
-     <height>16</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>землепользователь</string>
-   </property>
-  </widget>
-  <widget class="QLabel" name="label_2">
-   <property name="geometry">
-    <rect>
-     <x>300</x>
-     <y>3</y>
-     <width>68</width>
-     <height>16</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>подложка</string>
-   </property>
-  </widget>
-  <widget class="QLabel" name="label_5">
-   <property name="geometry">
-    <rect>
-     <x>30</x>
-     <y>10</y>
-     <width>171</width>
-     <height>16</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>административный район</string>
-   </property>
-  </widget>
-  <widget class="QComboBox" name="comboDistr">
-   <property name="geometry">
-    <rect>
-     <x>20</x>
-     <y>30</y>
-     <width>221</width>
-     <height>31</height>
-    </rect>
-   </property>
-  </widget>
+
   <widget class="QTextBrowser" name="textBrowser">
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>120</y>
-     <width>330</width>
+     <y>212</y>
+     <width>340</width>
      <height>141</height>
     </rect>
    </property>
-  </widget>
-  <widget class="QRadioButton" name="osmButton">
-   <property name="enabled">
-    <bool>true</bool>
-   </property>
-   <property name="geometry">
-    <rect>
-     <x>300</x>
-     <y>40</y>
-     <width>61</width>
-     <height>21</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>osm</string>
-   </property>
-   <property name="checked">
-    <bool>true</bool>
-   </property>
-   <attribute name="buttonGroup">
-    <string notr="true">buttonGroup</string>
-   </attribute>
   </widget>
  </widget>
  <resources/>
