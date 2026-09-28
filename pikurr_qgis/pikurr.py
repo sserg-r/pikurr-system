@@ -256,8 +256,11 @@ class pikurr:
         p.yearCombo.blockSignals(False)
 
     def _district_label(self, code):
+        """round49, A3.2: код — часть текста пункта (не только itemData),
+        иначе поиск по коду ничего не находит (совпадение ищется по
+        отображаемому тексту)."""
         name = self._districts.get(code)
-        return name if name else f'{code} (нет в справочнике)'
+        return f'{name} · {code}' if name else f'{code} (нет в справочнике)'
 
     def _oblast_label(self, code):
         name = self._oblasts.get(code)
@@ -309,7 +312,9 @@ class pikurr:
         p.userCombo.clear()
         p.userCombo.addItem('Весь район', None)
         for u in users:
-            p.userCombo.addItem(u['usname'], u['usern_co'])
+            # round49, A3.2: код в тексте пункта — иначе поиск по коду
+            # (2212000055) не находил ничего (искалось только по имени).
+            p.userCombo.addItem(f"{u['usname']} · {u['usern_co']}", u['usern_co'])
         p.userCombo.setCurrentIndex(0)
         p.userCombo.blockSignals(False)
 
@@ -422,8 +427,12 @@ class pikurr:
         # round48, B2.1: EPSG:3857 вместо CRS:84 — витрина запрашивает
         # сразу целевую проекцию, здесь раньше QGIS перепроецировал
         # картинку у себя после получения (см. отчёт, блок B2, замер).
+        # round49, A5: transparent=true — без него GetMap возвращал
+        # непрозрачный белый фон (проверено фактом прямым запросом:
+        # без параметра — 0% прозрачных пикселей, с ним — ~50% на охвате
+        # одного поля), закрывающий подложку/AI-оценку под собой.
         wms_url = (f"IgnoreGetMapUrl=1&crs=EPSG:3857&dpiMode=7&format=image/png"
-                   f"&layers={typename.split(':')[-1]}&styles"
+                   f"&transparent=true&layers={typename.split(':')[-1]}&styles"
                    f"&url={self.geoserver_url}/geoserver/pikurr/wms?CQL_FILTER={cql}")
         layer = QgsRasterLayer(wms_url, 'Поля (выбор)', 'wms')
         if not layer.isValid():
