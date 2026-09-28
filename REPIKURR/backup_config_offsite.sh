@@ -32,6 +32,18 @@
 #
 # Ротация — по числу файлов (как REPIKURR/backups/ для БД), по умолчанию
 # 10 последних архивов каждого вида.
+#
+# round44, блок E: единственная копия архивов лежит на ТОЙ ЖЕ машине,
+# что и репозиторий (координаторская) — потеря её диска забирает и
+# бэкап, и репозиторий одновременно. Второе место хранения — решение
+# пользователя (какая машина, как часто); один готовый вариант ниже,
+# использующий уже существующий SSH-доступ координатор→стенд (в отличие
+# от стенд→VPS, доверия для которого нет — см. "Не поставлен на
+# расписание" в CLAUDE.md): MIRROR_TO_HOST (пусто по умолчанию —
+# зеркалирование выключено, включается явно).
+#   MIRROR_TO_HOST=192.168.251.190 REPIKURR/backup_config_offsite.sh
+MIRROR_TO_HOST="${MIRROR_TO_HOST:-}"
+MIRROR_TO_DIR="${MIRROR_TO_DIR:-~/pikurr_config_backups_offsite_mirror}"
 
 set -euo pipefail
 
@@ -97,5 +109,13 @@ for pattern in "config_*.tar.gz" "secrets_*.tar.gz"; do
         rm -f "$old"
     done
 done
+
+if [[ -n "$MIRROR_TO_HOST" ]]; then
+    log "Зеркалирую на второе место хранения ($MIRROR_TO_HOST:$MIRROR_TO_DIR)..."
+    ssh "$MIRROR_TO_HOST" "mkdir -p $MIRROR_TO_DIR"
+    scp -q "$CONFIG_ARCHIVE" "$SECRETS_ARCHIVE" "$MIRROR_TO_HOST:$MIRROR_TO_DIR/"
+    ssh "$MIRROR_TO_HOST" "chmod 600 $MIRROR_TO_DIR/$(basename "$SECRETS_ARCHIVE")"
+    log "  OK — зеркало обновлено."
+fi
 
 log "=== Готово. Локальная копия: $LOCAL_BACKUP_DIR ==="
