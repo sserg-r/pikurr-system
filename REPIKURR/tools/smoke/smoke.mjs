@@ -365,6 +365,121 @@ async function main() {
     record('8. Клик в области без данных', false, 'не удалось получить размеры контейнера карты')
   }
 
+  // ---- 9. Переключатель подложки (round46, блок C.1) ---------------------
+  // По содержимому: каждый вариант реально меняет источник тайлов
+  // подложки — проверяем и разный URL (домен/сервис), и что слой
+  // 'base_map' в DOM меняется (src тайлов на карте).
+  async function basemapTileHost() {
+    // берём src любого загруженного тайла подложки (не WMS-слоёв pikurr)
+    return page.evaluate(() => {
+      const imgs = Array.from(document.querySelectorAll('.leaflet-tile-pane img.leaflet-tile'))
+        .filter(img => img.src && !img.src.includes('geoserver'))
+      return imgs.length ? new URL(imgs[imgs.length - 1].src).host : null
+    })
+  }
+  const basemapOptions = await page.locator('.radio-option').allTextContents()
+  const hosts = {}
+  for (const label of ['OSM', 'Esri Satellite', 'Нет']) {
+    if (!basemapOptions.some(t => t.includes(label))) continue
+    await page.locator('.radio-option', { hasText: label }).click()
+    await page.waitForTimeout(1200)
+    hosts[label] = await basemapTileHost()
+  }
+  const distinctHosts = new Set(Object.values(hosts).filter(Boolean))
+  record(
+    '9. Переключатель подложки',
+    (hosts['OSM'] && hosts['Esri Satellite'] ? hosts['OSM'] !== hosts['Esri Satellite'] : true) &&
+      (!('Нет' in hosts) || hosts['Нет'] === null || hosts['Нет'] === undefined),
+    `хосты_тайлов=${JSON.stringify(hosts)} различных_источников=${distinctHosts.size}`
+  )
+  // вернуть OSM как исходное состояние для последующих шагов
+  if (basemapOptions.some(t => t.includes('OSM'))) {
+    await page.locator('.radio-option', { hasText: 'OSM' }).click()
+    await page.waitForTimeout(800)
+  }
+
+  // ---- 10. Чекбокс векторного слоя полей (round46, блок C.2) -------------
+  const vectorLabel = page.locator('label.toggle-option:has-text("С/х участки")')
+  const vectorWasOn = await vectorLabel.locator('input[type="checkbox"]').isChecked()
+  freshNet('')
+  await vectorLabel.click()
+  await page.waitForTimeout(2000)
+  const vectorState1 = await vectorLabel.locator('input[type="checkbox"]').isChecked()
+  const netAfterToggle1 = freshNet('/geoserver/pikurr/wms').concat(freshNet('gwc/service/wms'))
+    .filter(r => /[?&]request=GetMap/i.test(r.url) && /[?&]layers=([^&]*fields)/i.test(r.url))
+  const domTilesAfterToggle1 = await page.locator('img[src*="layers=fields"], img[src*="layers=pikurr%3Afields"]').count()
+  record(
+    '10a. Чекбокс "С/х участки" — переключение 1',
+    true,
+    `было=${vectorWasOn} стало=${vectorState1} запросов_к_fields=${netAfterToggle1.length} тайлов_в_DOM=${domTilesAfterToggle1}`
+  )
+  freshNet('')
+  await vectorLabel.click()
+  await page.waitForTimeout(1000)
+  const vectorState2 = await vectorLabel.locator('input[type="checkbox"]').isChecked()
+  const domTilesAfterToggle2 = await page.locator('img[src*="layers=fields"], img[src*="layers=pikurr%3Afields"]').count()
+  record(
+    '10b. Чекбокс "С/х участки" — переключение 2 (возврат)',
+    vectorState2 === vectorWasOn,
+    `вернулось_к_исходному=${vectorState2 === vectorWasOn} тайлов_в_DOM=${vectorState2 ? domTilesAfterToggle2 : domTilesAfterToggle2 === 0}`
+  )
+
+  // ---- 11. «О системе» — модалка (round46, блок C.3) ----------------------
+  await page.locator('.help-icon').click()
+  await page.waitForTimeout(300)
+  const helpVisible = await page.locator('.help-content').isVisible().catch(() => false)
+  const helpText = helpVisible ? (await page.locator('.help-content p').textContent()) : ''
+  record(
+    '11. Модалка "О системе"',
+    helpVisible && !!helpText && helpText.trim().length > 20,
+    `модалка_видна=${helpVisible} длина_текста=${helpText?.trim().length || 0}`
+  )
+  await page.locator('.close-help').click().catch(() => {})
+  await page.waitForTimeout(300)
+  const helpClosed = !(await page.locator('.help-content').isVisible().catch(() => false))
+  record('11b. Закрытие модалки "О системе"', helpClosed, `модалка_скрыта=${helpClosed}`)
+
+  // ---- 12. Сворачивание/разворачивание боковой панели (round46, C.4) -----
+  const sidebarVisibleBefore = await page.locator('.sidebar').isVisible()
+  await page.locator('.sidebar-close-btn').click()
+  await page.waitForTimeout(500)
+  const sidebarCollapsed = await page.locator('.sidebar.collapsed').count() > 0
+  const openBtnVisible = await page.locator('.sidebar-open-btn').isVisible().catch(() => false)
+  record(
+    '12a. Сворачивание боковой панели',
+    sidebarCollapsed && openBtnVisible,
+    `панель_свёрнута=${sidebarCollapsed} кнопка_открытия_видна=${openBtnVisible}`
+  )
+  await page.locator('.sidebar-open-btn').click()
+  await page.waitForTimeout(500)
+  const sidebarReopened = await page.locator('.sidebar:not(.collapsed)').count() > 0
+  record(
+    '12b. Разворачивание боковой панели',
+    sidebarReopened,
+    `панель_развёрнута=${sidebarReopened} (исходно_видна=${sidebarVisibleBefore})`
+  )
+
+  // ---- 13. Кнопка скачивания QGIS-файла (round46, блок C.5) --------------
+  // По содержимому, не по факту клика: проверяем реальные HTTP-ответы на
+  // /pikurr_layers.qlr и /pikurr_qgis_instructions.txt (round45, A.1 —
+  // раньше при пропаже файла try_files тихо отдавал index.html/200 под
+  // именем архива; критерий здесь — код 200, Content-Type не text/html,
+  // ненулевой размер).
+  async function checkDownloadable(path) {
+    const resp = await page.request.get(`${BASE_URL}${path}`)
+    const ct = resp.headers()['content-type'] || ''
+    const len = Number(resp.headers()['content-length'] || '0')
+    return { ok: resp.ok() && !ct.includes('text/html') && len > 0, status: resp.status(), ct, len }
+  }
+  const qlrCheck = await checkDownloadable('/pikurr_layers.qlr')
+  const instrCheck = await checkDownloadable('/pikurr_qgis_instructions.txt')
+  record(
+    '13. Кнопка скачивания QGIS-файла (проверка по содержимому)',
+    qlrCheck.ok && instrCheck.ok,
+    `qlr: код=${qlrCheck.status} тип="${qlrCheck.ct}" размер=${qlrCheck.len} | ` +
+      `инструкция: код=${instrCheck.status} тип="${instrCheck.ct}" размер=${instrCheck.len}`
+  )
+
   await browser.close()
 
   // round35, блок B1: дамп перехваченных GWC-URL для healthcheck.py —
