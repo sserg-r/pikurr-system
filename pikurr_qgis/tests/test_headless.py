@@ -150,7 +150,7 @@ def main():
             <ogc:Literal>{target_user_prefix}*</ogc:Literal>
         </ogc:PropertyIsLike>
     </ogc:Filter>'''
-    agg_xml = agg_tpl.format(filter=filt)
+    agg_xml = agg_tpl.format(filter=filt, typename='pikurr:fields_latest')
     try:
         jsstat = geoserver_client.wps_execute_json(url, agg_xml)
         rows = jsstat.get('AggregationResults', [])
@@ -186,7 +186,17 @@ def _summary():
     print(f'HEADLESS: {n_pass}/{len(RESULTS)} PASS', flush=True)
 
 
-main()
+try:
+    main()
+except Exception:
+    # qgis --code: необработанное исключение уходит в модальный диалог
+    # QGIS, невидимый под offscreen — блокирует процесс НАВСЕГДА без
+    # единой строки в выводе (та же природа, что и находка про __file__
+    # выше). Печатаем сами и выходим явно, не полагаясь на traceback.
+    import traceback
+    traceback.print_exc()
+    import os
+    os._exit(2)
 # `qgis --code <script>` запускает скрипт внутри уже поднятого
 # приложения и не завершает процесс сам по себе (событийный цикл
 # продолжает работать бесконечно под offscreen-платформой) — форсируем

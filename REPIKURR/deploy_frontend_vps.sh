@@ -44,8 +44,34 @@ BASE_URL="${BASE_URL:-https://geobotany.of.by}"
 TS="$(date +%Y%m%d%H%M%S)"
 TAG="round_deploy_${TS}"
 BACKUP_TAG="pre_deploy_${TS}"
+CHECK_ONLY=0
+[ "${1:-}" = "--check" ] && CHECK_ONLY=1
 
 log() { echo "[$(date '+%F %T')] $*"; }
+
+# round48, блок A7: публикуемый pikurr_qgis.zip и districts_ref.json
+# собираются из исходников отдельными скриптами (round47/48) — до этой
+# правки ничто не мешало задеплоить УСТАРЕВШИЙ архив/справочник (шаг
+# 13b smoke.mjs проверял только "архив == сумма на проде", оба
+# публикуются одним деплоем и потому всегда совпадали бы друг с другом,
+# даже оба устарев). Проверка — ДО docker build, до любого обращения к
+# VPS: расхождение останавливает деплой немедленно.
+log "=== deploy_frontend_vps: пред-проверка pikurr_qgis.zip/districts_ref.json ==="
+if ! python3 "$SCRIPT_DIR/tools/build_qgis_plugin.py" --check; then
+    log "ОСТАНОВЛЕНО: pikurr_qgis.zip разошёлся с pikurr_qgis/ — пересобрать: "
+    log "  python3 $SCRIPT_DIR/tools/build_qgis_plugin.py"
+    exit 1
+fi
+if ! python3 "$SCRIPT_DIR/tools/gen_districts_ref.py" --check; then
+    log "ОСТАНОВЛЕНО: districts_ref.json разошёлся с constants.js — пересобрать: "
+    log "  python3 $SCRIPT_DIR/tools/gen_districts_ref.py"
+    exit 1
+fi
+
+if [ "$CHECK_ONLY" = "1" ]; then
+    log "--check: пред-проверки пройдены, сборка/выкатка НЕ выполнялись"
+    exit 0
+fi
 
 log "=== deploy_frontend_vps: сборка ${TAG} ==="
 docker build -t "repikurr-react:${TAG}" "$REACT_DIR"

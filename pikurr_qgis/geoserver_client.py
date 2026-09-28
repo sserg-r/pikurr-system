@@ -1,23 +1,43 @@
 # -*- coding: utf-8 -*-
 """
-Клиент к GeoServer для плагина pikurr (round47, блок A/C).
+Клиент к GeoServer для плагина pikurr (round47, блок A/C; round48,
+блоки A3/A4 — переход на сетевой стек QGIS, проверка доступности по
+содержимому).
 
 Вынесено из pikurr.py, чтобы код можно было проверить headless-тестом
-(tests/test_headless.py) без поднятия диалога QGIS. Не содержит ничего,
-что должно жить в pikurr.py — только сеть и разбор ответов.
+без поднятия панели QGIS. Не содержит ничего, что должно жить в
+pikurr.py — только сеть и разбор ответов.
 
 История: до round47 адрес сервера угадывался перебором
 (localhost:8080 -> http://geobotany.xyz, второй домен никогда не
 существовал — docs/round45-qgis-recon.md) и падение оборачивалось
-`raise Exception(...)` до показа диалога пользователю. Теперь адрес —
-явная настройка (QSettings) с прод-значением по умолчанию, а сетевые
-ошибки не прерывают работу диалога.
+`raise Exception(...)` до показа диалога пользователю. round47 сделал
+адрес явной настройкой (QSettings) с прод-значением по умолчанию.
+
+round48, блок A4: весь сетевой код переведён с `requests` на
+`QgsBlockingNetworkRequest` (сетевой стек QGIS,
+`QgsNetworkAccessManager`) — `requests` не видит настроек прокси/SSL из
+QGIS ("Параметры -> Сеть"), из-за чего в сети с прокси у пользователя
+работали бы только слои (через провайдер QGIS), но не списки и
+статистика (через `requests`). `QgsBlockingNetworkRequest` синхронный —
+не решает проблему блокировки интерфейса саму по себе (см. отчёт,
+блок B2.4), но обязателен для корректности в сетях с прокси.
+
+round48, блок A3: `check_service_availability()` раньше запрашивал
+`{url}/geoserver` без слэша — этот путь не попадает под правило
+`handle /geoserver/*` в Caddyfile и уходит во фронтенд, который отдаёт
+`index.html` с кодом 200 на любой путь. Проверка была технически
+"всегда зелёной" — и на боевом сервере, и на любом чужом SPA-сайте.
+Теперь проверка — по содержимому: WPS `GetCapabilities`, разбор XML,
+поиск корневого элемента `Capabilities` и трёх нужных процессов.
 """
 import json
 
 DEFAULT_GEOSERVER_URL = "https://geobotany.of.by"
 SETTINGS_KEY = "pikurr/geoserver_url"
 REQUEST_TIMEOUT_S = 10
+
+REQUIRED_WPS_PROCESSES = ("gs:Query", "vec:Aggregate", "vec:Bounds")
 
 
 class GeoServerError(Exception):
@@ -41,26 +61,124 @@ def set_geoserver_url(url):
     QSettings().setValue(SETTINGS_KEY, (url or "").strip().rstrip("/"))
 
 
+def _blocking_get(url, timeout_s=REQUEST_TIMEOUT_S):
+    """round48, A4: GET через сетевой стек QGIS. Возвращает
+    (status_code_or_none, body_text, error_message_or_empty)."""
+    from qgis.core import QgsBlockingNetworkRequest
+    from qgis.PyQt.QtCore import QUrl, QEventLoop, QTimer
+    from qgis.PyQt.QtNetwork import QNetworkRequest
+
+    req = QNetworkRequest(QUrl(url))
+    bnr = QgsBlockingNetworkRequest()
+    err = bnr.get(req, forceRefresh=True)
+    if err != QgsBlockingNetworkRequest.NoError:
+        return None, "", bnr.errorMessage() or f"код ошибки сети {err}"
+    reply = bnr.reply()
+    status = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
+    body = bytes(reply.content()).decode("utf-8", errors="replace")
+    return status, body, ""
+
+
+def _blocking_post(url, data, content_type="text/xml", timeout_s=REQUEST_TIMEOUT_S):
+    """round48, A4: POST через сетевой стек QGIS."""
+    from qgis.core import QgsBlockingNetworkRequest
+    from qgis.PyQt.QtCore import QUrl
+    from qgis.PyQt.QtNetwork import QNetworkRequest
+
+    req = QNetworkRequest(QUrl(url))
+    req.setHeader(QNetworkRequest.ContentTypeHeader, content_type)
+    bnr = QgsBlockingNetworkRequest()
+    payload = data.encode("utf-8") if isinstance(data, str) else data
+    err = bnr.post(req, payload)
+    if err != QgsBlockingNetworkRequest.NoError:
+        return None, "", bnr.errorMessage() or f"код ошибки сети {err}"
+    reply = bnr.reply()
+    status = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
+    body = bytes(reply.content()).decode("utf-8", errors="replace")
+    return status, body, ""
+
+
 def check_service_availability(url, timeout=REQUEST_TIMEOUT_S):
-    """Проверяет доступность GeoServer по URL.
+    """round48, A3: проверка ПО СОДЕРЖИМОМУ, не по коду ответа —
+    `{url}/geoserver` (без слэша) отдаёт 200 и на боевом GeoServer, и на
+    любом чужом SPA-сайте (try_files/index.html), поэтому раньше эта
+    проверка не могла отличить "сервер лежит" от "это вообще не
+    GeoServer". Используем WPS GetCapabilities (POST, тот же путь, что
+    и все рабочие запросы плагина) и разбираем XML.
 
     :returns: (ok: bool, detail: str) — detail всегда заполнен, даже
-        при ok=True (что именно проверено), чтобы можно было показать
-        пользователю причину отказа без повторной попытки.
+        при ok=True.
     """
-    import requests
-    from requests.exceptions import RequestException
-    probe = f"{url}/geoserver"
+    from xml.etree import ElementTree as ET
+
+    wps_url = f"{url}/geoserver/wps"
+    caps_xml = ('<?xml version="1.0" encoding="UTF-8"?>'
+                '<wps:GetCapabilities xmlns:wps="http://www.opengis.net/wps/1.0.0" '
+                'service="WPS"/>')
+    status, body, err = _blocking_post(wps_url, caps_xml)
+    if err:
+        return False, f"{wps_url} недоступен: {err}"
+    if status != 200:
+        return False, f"{wps_url} вернул HTTP {status} — недоступен"
+
     try:
-        # round47, A1.4: allow_redirects=True (по умолчанию requests) —
-        # достаточно для HTTP->HTTPS редиректа от Caddy, проверено фактом
-        # (docs/round47-qgis-plugin.md, блок A1).
-        response = requests.get(probe, timeout=timeout)
-        if response.status_code == 200:
-            return True, f"{probe} -> 200"
-        return False, f"{probe} -> HTTP {response.status_code}"
-    except RequestException as e:
-        return False, f"{probe} -> {e.__class__.__name__}: {e}"
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        return False, f"{wps_url}: ответ не XML (по этому адресу не GeoServer) — {body[:120]}"
+
+    root_local = root.tag.split('}')[-1]
+    if root_local != "Capabilities":
+        return False, (f"{wps_url}: ответ не похож на WPS Capabilities "
+                        f"(корневой элемент <{root_local}>) — по этому адресу не GeoServer")
+
+    body_text = body
+    missing = [p for p in REQUIRED_WPS_PROCESSES if p not in body_text]
+    if missing:
+        return False, (f"{wps_url}: GeoServer отвечает, но не хватает процессов "
+                        f"{missing} — обновление образа могло убрать WPS-расширение")
+
+    return True, f"{wps_url} -> WPS Capabilities, все процессы на месте"
+
+
+def wps_execute_json(geoserver_url, xml_body, timeout=REQUEST_TIMEOUT_S):
+    """POST WPS Execute, ожидает JSON в ответе. Поднимает GeoServerError
+    с понятным текстом на любой отказ (сеть, таймаут, ServiceException,
+    пустое/не-JSON тело) — не даёт вызывающему коду упасть на
+    json.loads() необработанным исключением."""
+    url = f"{geoserver_url}/geoserver/wps"
+    status, body, err = _blocking_post(url, xml_body)
+    if err:
+        raise GeoServerError(f"нет ответа от {url}: {err}")
+    if status != 200:
+        raise GeoServerError(f"{url} вернул HTTP {status}")
+    if not body.strip():
+        raise GeoServerError(f"{url} вернул пустой ответ")
+    if _is_service_exception(body):
+        raise GeoServerError(f"{url} вернул ошибку сервиса: {body[:300]}")
+    try:
+        return json.loads(body)
+    except (ValueError, json.JSONDecodeError):
+        raise GeoServerError(f"{url} вернул не-JSON ответ: {body[:300]}")
+
+
+def wps_execute_raw(geoserver_url, xml_body, timeout=REQUEST_TIMEOUT_S):
+    """round48, A5: POST WPS Execute, возвращает СЫРОЙ текст ответа
+    (не пытается разобрать как JSON) — для процессов вроде `vec:Bounds`,
+    у которых `RawDataOutput` без `mimeType` (сервер отвечает
+    GML/текстом, не JSON). Один запрос, один разбор — раньше на этот
+    же ответ сначала пробовали JSON (гарантированный отказ) и только
+    потом парсили как XML вторым отдельным запросом."""
+    url = f"{geoserver_url}/geoserver/wps"
+    status, body, err = _blocking_post(url, xml_body)
+    if err:
+        raise GeoServerError(f"нет ответа от {url}: {err}")
+    if status != 200:
+        raise GeoServerError(f"{url} вернул HTTP {status}")
+    if not body.strip():
+        raise GeoServerError(f"{url} вернул пустой ответ")
+    if _is_service_exception(body):
+        raise GeoServerError(f"{url} вернул ошибку сервиса: {body[:300]}")
+    return body
 
 
 def _is_service_exception(text):
@@ -75,34 +193,6 @@ def _is_service_exception(text):
     )
 
 
-def wps_execute_json(geoserver_url, xml_body, timeout=REQUEST_TIMEOUT_S):
-    """POST WPS Execute, ожидает JSON в ответе. Поднимает GeoServerError
-    с понятным текстом на любой отказ (сеть, таймаут, ServiceException,
-    пустое/не-JSON тело) — не даёт вызывающему коду упасть на
-    json.loads() необработанным исключением."""
-    import requests
-    from requests.exceptions import RequestException
-    url = f"{geoserver_url}/geoserver/wps"
-    try:
-        r = requests.post(url, data=xml_body.encode("utf-8"), timeout=timeout)
-    except RequestException as e:
-        raise GeoServerError(f"нет ответа от {url}: {e.__class__.__name__}: {e}")
-
-    if r.status_code != 200:
-        raise GeoServerError(f"{url} вернул HTTP {r.status_code}")
-
-    text = r.text
-    if not text.strip():
-        raise GeoServerError(f"{url} вернул пустой ответ")
-    if _is_service_exception(text):
-        raise GeoServerError(f"{url} вернул ошибку сервиса: {text[:300]}")
-
-    try:
-        return json.loads(text)
-    except (ValueError, json.JSONDecodeError):
-        raise GeoServerError(f"{url} вернул не-JSON ответ: {text[:300]}")
-
-
 def fetch_districts_reference(geoserver_url, timeout=REQUEST_TIMEOUT_S):
     """round47, A2: справочник «код района -> название» с сервера, тот
     же файл, что генерируется из REPIKURR/repikurr/src/constants.js
@@ -112,24 +202,43 @@ def fetch_districts_reference(geoserver_url, timeout=REQUEST_TIMEOUT_S):
     :returns: (oblasts: dict, districts: dict) — оба код->название.
     :raises GeoServerError: сеть/отказ/некорректный файл.
     """
-    import requests
-    from requests.exceptions import RequestException
-    # Справочник — статический файл фронтенда, лежит рядом с index.html,
-    # не под /geoserver — тот же хост, что geoserver_url (Caddy отдаёт
-    # оба с одного домена).
     url = f"{geoserver_url}/districts_ref.json"
+    status, body, err = _blocking_get(url)
+    if err:
+        raise GeoServerError(f"нет ответа от {url}: {err}")
+    if status != 200:
+        raise GeoServerError(f"{url} вернул HTTP {status}")
     try:
-        r = requests.get(url, timeout=timeout)
-    except RequestException as e:
-        raise GeoServerError(f"нет ответа от {url}: {e.__class__.__name__}: {e}")
-    if r.status_code != 200:
-        raise GeoServerError(f"{url} вернул HTTP {r.status_code}")
-    try:
-        data = r.json()
-    except ValueError:
-        raise GeoServerError(f"{url} вернул не-JSON ответ: {r.text[:200]}")
+        data = json.loads(body)
+    except (ValueError, json.JSONDecodeError):
+        raise GeoServerError(f"{url} вернул не-JSON ответ: {body[:200]}")
     oblasts = data.get("oblasts") or {}
     districts = data.get("districts") or {}
     if not districts:
         raise GeoServerError(f"{url}: справочник районов пуст")
     return oblasts, districts
+
+
+def fetch_year_district_data(geoserver_url, timeout=REQUEST_TIMEOUT_S):
+    """round48, C2.1: список лет — из того же источника, что витрина
+    (`REPIKURR/repikurr/src/services/geoserver.js::loadYearDistrictData()`),
+    не отдельная догадка. `/static/year_district.json` собирается
+    `deliver.py` при каждой доставке (round23).
+
+    :returns: (years: list[int], districts_by_year: dict[str, set[str]])
+    """
+    url = f"{geoserver_url}/static/year_district.json"
+    status, body, err = _blocking_get(url)
+    if err:
+        raise GeoServerError(f"нет ответа от {url}: {err}")
+    if status != 200:
+        raise GeoServerError(f"{url} вернул HTTP {status}")
+    try:
+        data = json.loads(body)
+    except (ValueError, json.JSONDecodeError):
+        raise GeoServerError(f"{url} вернул не-JSON ответ: {body[:200]}")
+    years = sorted(data.get("years") or [])
+    districts_by_year = {
+        y: set(ds) for y, ds in (data.get("districtsByYear") or {}).items()
+    }
+    return years, districts_by_year

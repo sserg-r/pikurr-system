@@ -23,222 +23,35 @@
 """
 import os.path
 
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
-from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction, QMessageBox
+from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
+from qgis.PyQt.QtGui import QIcon, QColor
+from qgis.PyQt.QtWidgets import QAction, QTableWidgetItem, QApplication
 from qgis.core import QgsProject
 
-# round47, блок B1: resources.py (сгенерированный, без .qrc-исходника,
-# жёстко импортировал PyQt5 в обход qgis.PyQt — падал на сборках с Qt6)
-# удалён. Иконка и оба WPS-шаблона грузятся напрямую из файлов рядом
-# с модулем — см. initGui() и geoserver_client-совместимые методы ниже.
-from .pikurr_dialog import pikurrDialog
 from . import geoserver_client
+from .pikurr_panel import pikurrPanel
 
+# round48, блок C4.4: подписи и цвета сценариев — те же, что на витрине
+# (REPIKURR/repikurr/src/components/StatsTable.jsx, VALUE_LABELS/COLOR_MAP).
+# Раньше в плагине был независимый набор (с альфа-каналом для несуществующей
+# карты стилей) — сверено фактом, RGB совпадали, здесь используются
+# буква в букву значения витрины.
+SCENARIO_LABELS = {
+    'forest':   'перевод в л/х',
+    'tillage':  'пахотное с/х',
+    'clearing': 'с/х после расчистки',
+    'meadow':   'луговое с/х',
+}
+SCENARIO_COLORS = {
+    'forest':   '#2C7D2C',
+    'tillage':  '#b85c06',
+    'meadow':   '#d9b530',
+    'clearing': '#0000CC',
+}
 
-class pikurr:
-    """QGIS Plugin Implementation."""
+GROUP_NAME = 'ПИК УРР'
 
-    def __init__(self, iface):
-        """Constructor.
-        :param iface: An interface instance that will be passed to this class
-            which provides the hook by which you can manipulate the QGIS
-            application at run time.
-        :type iface: QgsInterface
-        """
-        # Save reference to the QGIS interface
-        self.iface = iface
-        # initialize plugin directory
-        self.plugin_dir = os.path.dirname(__file__)
-        # initialize locale
-        locale = QSettings().value('locale/userLocale')[0:2]
-        locale_path = os.path.join(
-            self.plugin_dir,
-            'i18n',
-            'trash_{}.qm'.format(locale))
-
-        if os.path.exists(locale_path):
-            self.translator = QTranslator()
-            self.translator.load(locale_path)
-            QCoreApplication.installTranslator(self.translator)
-
-        # Declare instance attributes
-        self.actions = []
-        self.menu = self.tr(u'&pikurr')
-
-        # Check if plugin was started the first time in current QGIS session
-        # Must be set in initGui() to survive plugin reloads
-        self.first_start = None
-
-        # Заполняются load_server_data() при каждом запуске run() и
-        # повторно при нажатии "Применить" в поле сервера.
-        self.geoserver_url = geoserver_client.DEFAULT_GEOSERVER_URL
-        self.j = {'features': []}
-        self.districts = {}
-        self.oblasts = {}
-        self.usids = []
-
-    # noinspection PyMethodMayBeStatic
-    def tr(self, message):
-        """Get the translation for a string using Qt translation API.
-
-        We implement this ourselves since we do not inherit QObject.
-
-        :param message: String for translation.
-        :type message: str, QString
-
-        :returns: Translated version of message.
-        :rtype: QString
-        """
-        # noinspection PyTypeChecker,PyArgumentList,PyCallByClass
-        return QCoreApplication.translate('pikurr', message)
-
-    def add_action(
-        self,
-        icon_path,
-        text,
-        callback,
-        enabled_flag=True,
-        add_to_menu=True,
-        add_to_toolbar=True,
-        status_tip=None,
-        whats_this=None,
-        parent=None):
-        """Add a toolbar icon to the toolbar.
-
-        :param icon_path: Path to the icon for this action. Can be a resource
-            path (e.g. ':/plugins/foo/bar.png') or a normal file system path.
-        :type icon_path: str
-
-        :param text: Text that should be shown in menu items for this action.
-        :type text: str
-
-        :param callback: Function to be called when the action is triggered.
-        :type callback: function
-
-        :param enabled_flag: A flag indicating if the action should be enabled
-            by default. Defaults to True.
-        :type enabled_flag: bool
-
-        :param add_to_menu: Flag indicating whether the action should also
-            be added to the menu. Defaults to True.
-        :type add_to_menu: bool
-
-        :param add_to_toolbar: Flag indicating whether the action should also
-            be added to the toolbar. Defaults to True.
-        :type add_to_toolbar: bool
-
-        :param status_tip: Optional text to show in a popup when mouse pointer
-            hovers over the action.
-        :type status_tip: str
-
-        :param parent: Parent widget for the new action. Defaults None.
-        :type parent: QWidget
-
-        :param whats_this: Optional text to show in the status bar when the
-            mouse pointer hovers over the action.
-
-        :returns: The action that was created. Note that the action is also
-            added to self.actions list.
-        :rtype: QAction
-        """
-
-        icon = QIcon(icon_path)
-        action = QAction(icon, text, parent)
-        action.triggered.connect(callback)
-        action.setEnabled(enabled_flag)
-
-        if status_tip is not None:
-            action.setStatusTip(status_tip)
-
-        if whats_this is not None:
-            action.setWhatsThis(whats_this)
-
-        if add_to_toolbar:
-            # Adds plugin icon to Plugins toolbar
-            self.iface.addToolBarIcon(action)
-
-        if add_to_menu:
-            self.iface.addPluginToMenu(
-                self.menu,
-                action)
-
-        self.actions.append(action)
-
-        return action
-
-    def initGui(self):
-        """Create the menu entries and toolbar icons inside the QGIS GUI."""
-
-        # round47, блок B1: файл рядом с модулем, не ':/plugins/trash/...'.
-        icon_path = os.path.join(self.plugin_dir, 'icon_2.png')
-        self.add_action(
-            icon_path,
-            text=self.tr(u'pikurr'),
-            callback=self.run,
-            parent=self.iface.mainWindow())
-
-        # will be set False in run()
-        self.first_start = True
-
-    def unload(self):
-        """Removes the plugin menu item and icon from QGIS GUI."""
-        for action in self.actions:
-            self.iface.removePluginMenu(
-                self.tr(u'&pikurr'),
-                action)
-            self.iface.removeToolBarIcon(action)
-
-    # ------------------------------------------------------------------
-    # round47, блок A: адрес сервера, справочник районов, обработка ошибок
-    # ------------------------------------------------------------------
-
-    def _set_status(self, text, is_error=False):
-        """Сообщение в статус-строке диалога — вместо необработанных
-        исключений/raise в пользователя (A1.3, A3)."""
-        if not hasattr(self, 'dlg') or self.dlg is None:
-            return
-        color = '#a01818' if is_error else '#555555'
-        self.dlg.serverStatusLabel.setStyleSheet(f'color: {color};')
-        self.dlg.serverStatusLabel.setText(text)
-
-    def _apply_server_settings(self):
-        """Обработчик кнопки "Применить" — сохраняет адрес и
-        перезагружает справочник/список районов без пересоздания
-        диалога."""
-        geoserver_client.set_geoserver_url(self.dlg.serverUrlEdit.text())
-        self.geoserver_url = geoserver_client.get_geoserver_url()
-        self.dlg.serverUrlEdit.setText(self.geoserver_url)
-        self.load_server_data()
-
-    def load_server_data(self):
-        """Проверяет доступность сервера, тянет справочник районов и
-        список районов, реально присутствующих в данных (WPS gs:Query).
-        Не бросает исключений наружу — любой отказ отражается в
-        serverStatusLabel и оставляет диалог рабочим с пустыми списками
-        (A1.3, A3.3)."""
-        self.geoserver_url = geoserver_client.get_geoserver_url()
-        self.dlg.serverUrlEdit.setText(self.geoserver_url)
-
-        ok, detail = geoserver_client.check_service_availability(self.geoserver_url)
-        if not ok:
-            self._set_status(f'Сервер недоступен: {detail}', is_error=True)
-            self.j = {'features': []}
-            self._populate_oblast_and_district_combos()
-            return
-
-        # round47, A2: справочник районов — с сервера (тот же файл, что
-        # использует фронтенд, см. geoserver_client.py), не собственная
-        # копия плагина. Отказ — не критичен, коды покажутся "как есть".
-        try:
-            self.oblasts, self.districts = geoserver_client.fetch_districts_reference(
-                self.geoserver_url)
-        except geoserver_client.GeoServerError as e:
-            self.oblasts, self.districts = {}, {}
-            self._set_status(f'Справочник названий районов недоступен ({e}) '
-                              f'— коды будут показаны без названий', is_error=True)
-
-        xml = '''<?xml version="1.0" encoding="UTF-8"?><wps:Execute version="1.0.0" service="WPS" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.opengis.net/wps/1.0.0" xmlns:wfs="http://www.opengis.net/wfs" xmlns:wps="http://www.opengis.net/wps/1.0.0" xmlns:ows="http://www.opengis.net/ows/1.1" xmlns:gml="http://www.opengis.net/gml" xmlns:ogc="http://www.opengis.net/ogc" xmlns:wcs="http://www.opengis.net/wcs/1.1.1" xmlns:xlink="http://www.w3.org/1999/xlink" xsi:schemaLocation="http://www.opengis.net/wps/1.0.0 http://schemas.opengis.net/wps/1.0.0/wpsAll.xsd">
+_GS_QUERY_XML = '''<?xml version="1.0" encoding="UTF-8"?><wps:Execute version="1.0.0" service="WPS" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.opengis.net/wps/1.0.0" xmlns:wfs="http://www.opengis.net/wfs" xmlns:wps="http://www.opengis.net/wps/1.0.0" xmlns:ows="http://www.opengis.net/ows/1.1" xmlns:gml="http://www.opengis.net/gml" xmlns:ogc="http://www.opengis.net/ogc" xmlns:wcs="http://www.opengis.net/wcs/1.1.1" xmlns:xlink="http://www.w3.org/1999/xlink" xsi:schemaLocation="http://www.opengis.net/wps/1.0.0 http://schemas.opengis.net/wps/1.0.0/wpsAll.xsd">
                 <ows:Identifier>gs:Query</ows:Identifier>
                 <wps:DataInputs>
                     <wps:Input>
@@ -251,322 +64,527 @@ class pikurr:
                         </wps:Body>
                     </wps:Reference>
                     </wps:Input>
-                    <wps:Input>
-                        <ows:Identifier>attribute</ows:Identifier>
-                        <wps:Data>
-                            <wps:LiteralData>rn</wps:LiteralData>
-                        </wps:Data>
-                        </wps:Input>
-                        <wps:Input>
-                        <ows:Identifier>attribute</ows:Identifier>
-                        <wps:Data>
-                            <wps:LiteralData>usname</wps:LiteralData>
-                        </wps:Data>
-                        </wps:Input>
-                        <wps:Input>
-                        <ows:Identifier>attribute</ows:Identifier>
-                        <wps:Data>
-                            <wps:LiteralData>usern_co</wps:LiteralData>
-                        </wps:Data>
-                        </wps:Input>
+                    <wps:Input><ows:Identifier>attribute</ows:Identifier><wps:Data><wps:LiteralData>rn</wps:LiteralData></wps:Data></wps:Input>
+                    <wps:Input><ows:Identifier>attribute</ows:Identifier><wps:Data><wps:LiteralData>usname</wps:LiteralData></wps:Data></wps:Input>
+                    <wps:Input><ows:Identifier>attribute</ows:Identifier><wps:Data><wps:LiteralData>usern_co</wps:LiteralData></wps:Data></wps:Input>
                 </wps:DataInputs>
                 <wps:ResponseForm>
-                    <wps:RawDataOutput mimeType="application/json">
-                    <ows:Identifier>result</ows:Identifier>
-                    </wps:RawDataOutput>
+                    <wps:RawDataOutput mimeType="application/json"><ows:Identifier>result</ows:Identifier></wps:RawDataOutput>
                 </wps:ResponseForm>
                 </wps:Execute>'''
+
+
+class pikurr:
+    """QGIS Plugin Implementation."""
+
+    def __init__(self, iface):
+        self.iface = iface
+        self.plugin_dir = os.path.dirname(__file__)
+        locale = QSettings().value('locale/userLocale')[0:2]
+        locale_path = os.path.join(self.plugin_dir, 'i18n', 'trash_{}.qm'.format(locale))
+        if os.path.exists(locale_path):
+            self.translator = QTranslator()
+            self.translator.load(locale_path)
+            QCoreApplication.installTranslator(self.translator)
+
+        self.actions = []
+        self.menu = self.tr(u'&pikurr')
+        self.action = None
+
+        # round48, блок C1: панель вместо модального диалога — живёт,
+        # пока плагин загружен, не пересоздаётся на каждый клик.
+        self.panel = None
+        self._signals_connected = False
+
+        self.geoserver_url = geoserver_client.DEFAULT_GEOSERVER_URL
+        self._features = []
+        self._oblasts = {}
+        self._districts = {}
+        self._district_codes_by_oblast = {}
+        self._years = []
+        self._districts_by_year = {}
+        self._data_loaded = False  # блок B2.3: списки — один раз за сеанс
+
+        self._layer_group = None
+        self._fields_layer_id = None
+        self._raster_layer_id = None
+        self._basemap_layer_id = None
+        self._last_stats_rows = []
+
+    def tr(self, message):
+        return QCoreApplication.translate('pikurr', message)
+
+    def initGui(self):
+        icon_path = os.path.join(self.plugin_dir, 'icon_2.png')
+        icon = QIcon(icon_path)
+        self.action = QAction(icon, self.tr(u'pikurr'), self.iface.mainWindow())
+        self.action.triggered.connect(self.toggle_panel)
+        self.action.setCheckable(True)
+        self.iface.addToolBarIcon(self.action)
+        self.iface.addPluginToMenu(self.menu, self.action)
+        self.actions.append(self.action)
+
+    def unload(self):
+        """round48, C1.3: убирает панель, не даёт повторной загрузке
+        плодить панели/дублировать подписки на сигналы."""
+        for action in self.actions:
+            self.iface.removePluginMenu(self.menu, action)
+            self.iface.removeToolBarIcon(action)
+        if self.panel is not None:
+            self.iface.removeDockWidget(self.panel)
+            self.panel.deleteLater()
+            self.panel = None
+        self._signals_connected = False
+
+    # ------------------------------------------------------------------
+    # Панель: создание, сигналы (round48, блок C1/C3.4)
+    # ------------------------------------------------------------------
+
+    def toggle_panel(self):
+        if self.panel is None:
+            self.panel = pikurrPanel()
+            self.panel.serverUrlEdit.setText(geoserver_client.get_geoserver_url())
+            self._connect_signals()
+            self.iface.addDockWidget(Qt.RightDockWidgetArea, self.panel)
+            self.panel.visibilityChanged.connect(
+                lambda visible: self.action.setChecked(visible))
+            self.refresh_data()
+        else:
+            self.panel.setVisible(not self.panel.isVisible())
+
+    def _connect_signals(self):
+        if self._signals_connected:
+            return
+        p = self.panel
+        p.serverApplyButton.clicked.connect(self._apply_server_settings)
+        p.refreshButton.clicked.connect(lambda: self.refresh_data(force=True))
+        p.yearCombo.activated.connect(self._on_year_changed)
+        p.oblastCombo.activated.connect(self._on_oblast_changed)
+        p.districtCombo.activated.connect(self._on_district_changed)
+        p.userCombo.activated.connect(self._on_user_changed)
+        p.aiCheckBox.toggled.connect(self._on_ai_toggled)
+        p.esriRadio.toggled.connect(self._on_basemap_changed)
+        p.osmRadio.toggled.connect(self._on_basemap_changed)
+        p.noneRadio.toggled.connect(self._on_basemap_changed)
+        p.copyButton.clicked.connect(self._copy_stats)
+        self._signals_connected = True
+
+    def _set_status(self, text, is_error=False):
+        if self.panel is None:
+            return
+        color = '#a01818' if is_error else '#555555'
+        self.panel.statusLabel.setStyleSheet(f'color: {color};')
+        self.panel.statusLabel.setText(text)
+
+    def _message(self, text, level=None, error=False):
+        """round48, C5.3: ошибки — в строке сообщений QGIS, не модальными
+        окнами; панель остаётся рабочей."""
+        from qgis.core import Qgis
+        bar = self.iface.messageBar()
+        lvl = Qgis.Critical if error else (level if level is not None else Qgis.Info)
+        bar.pushMessage('pikurr', text, level=lvl, duration=8)
+
+    # ------------------------------------------------------------------
+    # Загрузка данных (round47 A1-A3 перенесены + round48 A1/A2/C2.1)
+    # ------------------------------------------------------------------
+
+    def _apply_server_settings(self):
+        geoserver_client.set_geoserver_url(self.panel.serverUrlEdit.text())
+        self.geoserver_url = geoserver_client.get_geoserver_url()
+        self.panel.serverUrlEdit.setText(self.geoserver_url)
+        self.refresh_data(force=True)
+
+    def refresh_data(self, force=False):
+        """round48, B2.3: списки грузятся один раз за сеанс (пока не
+        нажата «Обновить» или не сменён адрес сервера) — раньше
+        load_server_data() дёргалась на каждое открытие диалога."""
+        if self._data_loaded and not force:
+            return
+        self.geoserver_url = geoserver_client.get_geoserver_url()
+
+        ok, detail = geoserver_client.check_service_availability(self.geoserver_url)
+        if not ok:
+            self._set_status(f'Сервер недоступен: {detail}. Прод — прерываемая ВМ, '
+                              f'восстановление после остановки занимает 3-4 минуты — '
+                              f'если это он, попробуйте повторить через несколько минут.',
+                              is_error=True)
+            self._message('GeoServer недоступен — см. строку состояния панели', error=True)
+            self._features = []
+            self._populate_combos()
+            return
+
         try:
-            self.j = geoserver_client.wps_execute_json(self.geoserver_url, xml)
+            self._oblasts, self._districts = geoserver_client.fetch_districts_reference(self.geoserver_url)
         except geoserver_client.GeoServerError as e:
-            self.j = {'features': []}
+            self._oblasts, self._districts = {}, {}
+            self._message(f'Справочник названий районов недоступен: {e}')
+
+        try:
+            self._years, self._districts_by_year = geoserver_client.fetch_year_district_data(self.geoserver_url)
+        except geoserver_client.GeoServerError as e:
+            self._years, self._districts_by_year = [], {}
+            self._message(f'Список лет недоступен: {e}')
+
+        try:
+            result = geoserver_client.wps_execute_json(self.geoserver_url, _GS_QUERY_XML)
+            self._features = result.get('features', [])
+        except geoserver_client.GeoServerError as e:
+            self._features = []
             self._set_status(f'Не удалось загрузить список районов: {e}', is_error=True)
-            self._populate_oblast_and_district_combos()
+            self._populate_combos()
             return
 
         self._set_status(f'Сервер: {self.geoserver_url} — данные загружены '
-                          f'({len(self.j.get("features", []))} записей)')
-        self._populate_oblast_and_district_combos()
+                          f'({len(self._features)} записей)')
+        self._data_loaded = True
+        self._populate_year_combo()
+        self._populate_combos()
+
+    def _selected_year(self):
+        """None => «последние данные» (fields_latest, без условия года)."""
+        data = self.panel.yearCombo.currentData()
+        return data
+
+    def _populate_year_combo(self):
+        p = self.panel
+        p.yearCombo.blockSignals(True)
+        p.yearCombo.clear()
+        p.yearCombo.addItem('последние данные', None)
+        for y in self._years:
+            p.yearCombo.addItem(str(y), y)
+        p.yearCombo.setCurrentIndex(0)
+        p.yearCombo.blockSignals(False)
 
     def _district_label(self, code):
-        name = self.districts.get(code)
+        name = self._districts.get(code)
         return name if name else f'{code} (нет в справочнике)'
 
     def _oblast_label(self, code):
-        name = self.oblasts.get(code)
+        name = self._oblasts.get(code)
         return name if name else f'{code} (нет в справочнике)'
 
-    def _populate_oblast_and_district_combos(self):
-        """round47, A2.3-A2.4: реальные коды районов — из данных
-        (self.j), не из статического перечня; область выводится как
-        первые 2 символа кода района (проверено фактом: соответствует
-        oblasts из constants.js/districts_ref.json). Имена показываются
-        по коду через itemData — не через обратный поиск по тексту
-        (старый self.inv_distr падал бы на дублирующихся/неизвестных
-        именах)."""
-        real_codes = list(dict.fromkeys(
-            f['properties']['rn'] for f in self.j.get('features', [])
-        ))
+    def _populate_combos(self):
+        """round47 A2.4 перенесено на панель: реальные коды — из данных
+        (self._features), не статический перечень; имя ищется через
+        itemData, не обратным поиском по тексту."""
+        real_codes = list(dict.fromkeys(f['properties']['rn'] for f in self._features))
         self._district_codes_by_oblast = {}
         for code in real_codes:
             self._district_codes_by_oblast.setdefault(code[:2], []).append(code)
 
-        self.dlg.comboOblast.blockSignals(True)
-        self.dlg.comboOblast.clear()
-        self.dlg.comboOblast.addItem('Все области', '')
+        p = self.panel
+        p.oblastCombo.blockSignals(True)
+        p.oblastCombo.clear()
+        p.oblastCombo.addItem('Все области', '')
         for oblast_code in sorted(self._district_codes_by_oblast):
-            self.dlg.comboOblast.addItem(self._oblast_label(oblast_code), oblast_code)
-        self.dlg.comboOblast.blockSignals(False)
-
+            p.oblastCombo.addItem(self._oblast_label(oblast_code), oblast_code)
+        p.oblastCombo.blockSignals(False)
         self._refresh_district_combo()
 
     def _refresh_district_combo(self):
-        oblast_code = self.dlg.comboOblast.currentData() or ''
+        oblast_code = self.panel.oblastCombo.currentData() or ''
         codes = (self._district_codes_by_oblast.get(oblast_code, [])
                  if oblast_code else
                  [c for codes in self._district_codes_by_oblast.values() for c in codes])
-
-        self.dlg.comboDistr.blockSignals(True)
-        self.dlg.comboDistr.clear()
+        p = self.panel
+        p.districtCombo.blockSignals(True)
+        p.districtCombo.clear()
         for code in codes:
-            self.dlg.comboDistr.addItem(self._district_label(code), code)
-        self.dlg.comboDistr.blockSignals(False)
-        self.change_us()
+            p.districtCombo.addItem(self._district_label(code), code)
+        p.districtCombo.setCurrentIndex(-1)
+        p.districtCombo.blockSignals(False)
+        self._clear_user_combo()
 
-    def run(self):
-        """Run method that performs all the real work"""
-        # Create the dialog with elements (after translation) and keep reference
-        # Only create GUI ONCE in callback, so that it will only load when the plugin is started
-        if self.first_start == True:
-            self.first_start = False
-            self.dlg = pikurrDialog()
-            self.dlg.serverApplyButton.clicked.connect(self._apply_server_settings)
-            self.dlg.comboOblast.activated.connect(self._refresh_district_combo)
-            self.dlg.comboDistr.activated.connect(self.change_us)
-            self.dlg.addvecButton.clicked.connect(self.add_vec2)
+    def _clear_user_combo(self):
+        p = self.panel
+        p.userCombo.blockSignals(True)
+        p.userCombo.clear()
+        p.userCombo.blockSignals(False)
 
-        self.dlg.esriButton.toggled.connect(self.base_map)
-        self.dlg.baseButton.toggled.connect(self.base_map)
-        self.dlg.osmButton.toggled.connect(self.base_map)
+    def _refresh_user_combo(self, district_code):
+        """round48, C2.2: первый пункт — «Весь район»."""
+        users = [f['properties'] for f in self._features if f['properties']['rn'] == district_code]
+        p = self.panel
+        p.userCombo.blockSignals(True)
+        p.userCombo.clear()
+        p.userCombo.addItem('Весь район', None)
+        for u in users:
+            p.userCombo.addItem(u['usname'], u['usern_co'])
+        p.userCombo.setCurrentIndex(0)
+        p.userCombo.blockSignals(False)
 
-        self.load_server_data()
+    # ------------------------------------------------------------------
+    # Реакция на выбор (round48, C2.3 — сигнал activated, не любое изменение)
+    # ------------------------------------------------------------------
 
-        self.dlg.show()
-        # Run the dialog event loop
-        result = self.dlg.exec_()
-        # See if OK was pressed
-        if result:
-            # Do something useful here - delete the line containing pass and
-            # substitute with your code.
-            pass
+    def _on_year_changed(self, _index):
+        district_code = self.panel.districtCombo.currentData()
+        if district_code:
+            self._apply_selection(district_code, self.panel.userCombo.currentData())
 
-    def change_us(self):
-        distr_id = self.dlg.comboDistr.currentData()
-        if not distr_id:
-            self.usids = []
-            self.dlg.comboUsers.clear()
+    def _on_oblast_changed(self, _index):
+        self._refresh_district_combo()
+
+    def _on_district_changed(self, _index):
+        district_code = self.panel.districtCombo.currentData()
+        if not district_code:
             return
-        usnames = ['все', *[f["properties"]["usname"] for f in self.j['features']
-                             if f['properties']['rn'] == str(distr_id)]]
-        usids = [f["properties"]["usern_co"] for f in self.j['features']
-                 if f['properties']['rn'] == str(distr_id)]
-        self.usids = [usids[0][:5], *usids] if usids else []
-        self.dlg.comboUsers.clear()
-        self.dlg.comboUsers.addItems(usnames)
+        self._refresh_user_combo(district_code)
+        # round48, C2.3: выбор района сразу показывает "Весь район" — не
+        # больше 1-2 действий (область — опционально, район — обязателен)
+        # до слоя и таблицы, без отдельной кнопки "добавить слои".
+        self._apply_selection(district_code, None)
 
-    def base_map(self):
+    def _on_user_changed(self, _index):
+        district_code = self.panel.districtCombo.currentData()
+        user_code = self.panel.userCombo.currentData()
+        if district_code:
+            self._apply_selection(district_code, user_code)
+
+    def _build_filters(self, district_code, user_code):
+        """round48, блок A1/A2: единая точка построения фильтров для
+        слоя/границ/статистики — иначе три копии одной и той же логики
+        расходятся молча (как было в 1.1.0).
+
+        :returns: (typename, cql_filter_str, ogc_filter_xml)
+        """
+        year = self._selected_year()
+        typename = 'pikurr:fields' if year is not None else 'pikurr:fields_latest'
+
+        if user_code:
+            cql_group = f"nr_user LIKE '{user_code}%'"
+            ogc_group = (f'<ogc:PropertyIsLike wildCard="*" singleChar="." escape="!">'
+                         f'<ogc:PropertyName>nr_user</ogc:PropertyName>'
+                         f'<ogc:Literal>{user_code}*</ogc:Literal></ogc:PropertyIsLike>')
+        else:
+            # round48, A2: "Весь район" — фильтр по АТРИБУТУ района
+            # (district = код), не по префиксу первых 5 символов кода
+            # первого землепользователя (usids[0][:5]) — тот способ
+            # совпадал с реальным районом только потому, что структура
+            # кодов землепользователей везде однородна на сегодняшних
+            # данных (проверено фактом на всех районах с данными на
+            # проде — docs/round48-qgis-plugin.md, блок A2), но не был
+            # гарантирован структурно.
+            cql_group = f"district = '{district_code}'"
+            ogc_group = (f'<ogc:PropertyIsEqualTo>'
+                         f'<ogc:PropertyName>district</ogc:PropertyName>'
+                         f'<ogc:Literal>{district_code}</ogc:Literal></ogc:PropertyIsEqualTo>')
+
+        if year is not None:
+            cql = f'year = {year} AND {cql_group}'
+            ogc = (f'<ogc:Filter><ogc:And>'
+                   f'<ogc:PropertyIsEqualTo><ogc:PropertyName>year</ogc:PropertyName>'
+                   f'<ogc:Literal>{year}</ogc:Literal></ogc:PropertyIsEqualTo>'
+                   f'{ogc_group}</ogc:And></ogc:Filter>')
+        else:
+            cql = cql_group
+            ogc = f'<ogc:Filter>{ogc_group}</ogc:Filter>'
+
+        return typename, cql, ogc
+
+    def _apply_selection(self, district_code, user_code):
+        typename, cql, ogc_filter = self._build_filters(district_code, user_code)
+
+        self._update_fields_layer(typename, cql)
+        self._update_bounds(typename, ogc_filter)
+        self._update_stats(typename, ogc_filter)
+
+        year = self._selected_year()
+        who = self.panel.userCombo.currentText() if user_code else 'весь район'
+        district_label = self._district_label(district_code)
+        year_label = str(year) if year is not None else 'последние данные'
+        self.panel.statsHeaderLabel.setText(f'{district_label} · {who} · {year_label}')
+
+    # ------------------------------------------------------------------
+    # Слои (round48, C3: группа "ПИК УРР", без дублей, round48 B2.1: EPSG:3857)
+    # ------------------------------------------------------------------
+
+    def _get_group(self):
+        root = QgsProject.instance().layerTreeRoot()
+        group = root.findGroup(GROUP_NAME)
+        if group is None:
+            group = root.insertGroup(0, GROUP_NAME)
+        return group
+
+    def _replace_layer(self, attr_name, new_layer, insert_index=0):
+        group = self._get_group()
+        old_id = getattr(self, attr_name, None)
+        if old_id:
+            old_layer = QgsProject.instance().mapLayer(old_id)
+            if old_layer is not None:
+                QgsProject.instance().removeMapLayer(old_layer)
+        QgsProject.instance().addMapLayer(new_layer, False)
+        group.insertLayer(insert_index, new_layer)
+        setattr(self, attr_name, new_layer.id())
+
+    def _update_fields_layer(self, typename, cql):
         from qgis.core import QgsRasterLayer
-        rb = self.dlg.sender()
-        if rb.isChecked():
-            if rb.text() == 'esri':
-                self.radio_esri()
-            elif rb.text() == 'osm':
-                self.radio_osm()
-            else:
-                self.radio_base()
+        # round48, B2.1: EPSG:3857 вместо CRS:84 — витрина запрашивает
+        # сразу целевую проекцию, здесь раньше QGIS перепроецировал
+        # картинку у себя после получения (см. отчёт, блок B2, замер).
+        wms_url = (f"IgnoreGetMapUrl=1&crs=EPSG:3857&dpiMode=7&format=image/png"
+                   f"&layers={typename.split(':')[-1]}&styles"
+                   f"&url={self.geoserver_url}/geoserver/pikurr/wms?CQL_FILTER={cql}")
+        layer = QgsRasterLayer(wms_url, 'Поля (выбор)', 'wms')
+        if not layer.isValid():
+            self._message('Слой полей не удалось построить (см. лог)', error=True)
+            return
+        self._replace_layer('_fields_layer_id', layer)
 
-    def radio_esri(self):
-        from qgis.core import QgsRasterLayer, QgsLayerTreeLayer
-        lr_name = 'base_map'
-        wms_url = "type=xyz&url=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/%7Bz%7D/%7By%7D/%7Bx%7D&zmax=20&zmin=0&http-header:referer="
-        root_lr = QgsProject.instance().layerTreeRoot()
-        lr = [layer for layer in root_lr.children() if layer.name() == lr_name]
-        try:
-            [root_lr.removeChildNode(child) for child in lr if child.name() == lr_name]
-        except Exception:
-            pass
-        rlayer = QgsRasterLayer(wms_url, lr_name, 'wms')
-        QgsProject.instance().addMapLayer(rlayer, False)
-        QgsProject.instance().layerTreeRoot().insertChildNode(-1, QgsLayerTreeLayer(rlayer))
-        self.iface.mapCanvas().refresh()
-
-    def radio_osm(self):
-        from qgis.core import QgsRasterLayer, QgsLayerTreeLayer
-        lr_name = 'base_map'
-        wms_url = "type=xyz&url=https://tile.openstreetmap.de/%7Bz%7D/%7Bx%7D/%7By%7D.png&zmax=20&zmin=0&http-header:referer="
-
-        root_lr = QgsProject.instance().layerTreeRoot()
-        lr = [layer for layer in root_lr.children() if layer.name() == lr_name]
-        try:
-            [root_lr.removeChildNode(child) for child in lr if child.name() == lr_name]
-        except Exception:
-            pass
-        rlayer = QgsRasterLayer(wms_url, lr_name, 'wms')
-        QgsProject.instance().addMapLayer(rlayer, False)
-        QgsProject.instance().layerTreeRoot().insertChildNode(-1, QgsLayerTreeLayer(rlayer))
-        self.iface.mapCanvas().refresh()
-
-    def radio_base(self):
-        # round47, блок C.2: этот путь идёт напрямую в /geoserver/wms,
-        # минуя GWC (кэш) — решение "стоит ли менять" зависит от замера
-        # цены (docs/round47-qgis-plugin.md, блок C), сам путь не тронут.
-        from qgis.core import QgsRasterLayer, QgsCoordinateReferenceSystem, QgsLayerTreeLayer
-        from qgis.PyQt.QtWidgets import QApplication
-
-        lr_name = 'base_map'
-        wms_url = f"crs=CRS:84&dpiMode=7&format=image/png&layers=pikurr:image_assessment&styles&url={self.geoserver_url}/geoserver/wms?version=1.1.0"
-
-        root_lr = QgsProject.instance().layerTreeRoot()
-        lr = [layer for layer in root_lr.children() if layer.name() == lr_name]
-        try:
-            [root_lr.removeChildNode(child) for child in lr if child.name() == lr_name]
-        except Exception:
-            pass
-        rlayer = QgsRasterLayer(wms_url, lr_name, 'wms')
-        QgsProject.instance().addMapLayer(rlayer, False)
-        QgsProject.instance().layerTreeRoot().insertChildNode(-1, QgsLayerTreeLayer(rlayer))
-        QApplication.instance().processEvents()
-        QgsProject.instance().setCrs(QgsCoordinateReferenceSystem(3857))
-        self.iface.mapCanvas().refresh()
-
-    def _read_wps_template(self, filename):
-        """round47, блок B1: шаблоны WPS-запросов — обычные файлы рядом
-        с модулем (pikurr_qgis/wps_templates/), не Qt-ресурс."""
-        path = os.path.join(self.plugin_dir, 'wps_templates', filename)
-        with open(path, 'r', encoding='utf-8') as fh:
-            return fh.read()
-
-    def add_vec2(self):
-        from qgis.core import QgsRasterLayer, QgsRectangle
+    def _update_bounds(self, typename, ogc_filter_xml):
+        from qgis.core import (QgsRectangle, QgsCoordinateTransform,
+                                QgsCoordinateReferenceSystem, QgsProject as QP)
         from xml.etree import ElementTree as ET
 
-        curids = self.dlg.comboUsers.currentIndex()
-        if curids < 0 or not self.usids:
-            QMessageBox.information(self.dlg, 'pikurr',
-                                     'Сначала выберите район и землепользователя.')
-            return
+        tpl_path = os.path.join(self.plugin_dir, 'wps_templates', 'bounds.xml')
+        with open(tpl_path, encoding='utf-8') as fh:
+            tpl = fh.read()
+        xml = tpl.format(typename=typename, filter=ogc_filter_xml)
 
-        lr_name = 'fields'
-        wms_url = f"IgnoreGetMapUrl=1&crs=CRS:84&dpiMode=7&format=image/png&layers=fields&styles&url={self.geoserver_url}/geoserver/pikurr/wms?CQL_FILTER=nr_user LIKE '{self.usids[curids]}%'"
-        rlayer = QgsRasterLayer(wms_url, lr_name, 'wms')
-        lr = [layer.id() for layer in QgsProject.instance().mapLayers().values() if layer.name() == lr_name]
-
-        def prepare_xml_query(template_name, filter_type, prop, value):
-            possibility = ['PropertyIsEqualTo', 'PropertyIsLike', 'PropertyIsNull',
-                            'PropertyIsBetween', 'PropertyIsGreaterThan',
-                            'PropertyIsGreaterThanOrEqualTo', 'PropertyIsLessThan',
-                            'PropertyIsLessThanOrEqualTo']
-            if filter_type not in possibility:
-                raise ValueError(f'filter_type must be one of {possibility}')
-
-            xmlbody = self._read_wps_template(template_name)
-            filter_xml = f"""<ogc:Filter>
-                            <ogc:{filter_type} wildCard="*" singleChar="." escape="!">
-                                <ogc:PropertyName>{prop}</ogc:PropertyName>
-                                <ogc:Literal>{value}*</ogc:Literal>
-                            </ogc:{filter_type}>
-                        </ogc:Filter>"""
-            return xmlbody.format(filter=filter_xml)
-
-        from qgis.core import QgsCoordinateTransform, QgsCoordinateReferenceSystem
-
-        map_epsg = self.iface.mapCanvas().mapSettings().destinationCrs().authid()
-        source_crs = QgsCoordinateReferenceSystem(rlayer.crs().authid())
-        dest_crs = QgsCoordinateReferenceSystem(map_epsg)
-        transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
-        if map_epsg != rlayer.crs().authid():
-            bbox = transform.transformBoundingBox(rlayer.extent())
-        else:
-            bbox = rlayer.extent()
-
+        # round48, A5: ОДИН запрос — раньше первый запрос через JSON-путь
+        # был обречён на отказ (bounds.xml не просит JSON) и код нарочно
+        # переходил ко второму сырому запросу. Разбираем сразу как GML.
         try:
-            [QgsProject.instance().removeMapLayer(l) for l in lr]
-            self.iface.mapCanvas().refresh()
-        except Exception:
-            pass
-        QgsProject.instance().addMapLayer(rlayer)
-
-        if self.dlg.comboUsers.currentIndex() == -1:
-            self.iface.mapCanvas().setExtent(bbox)
-            self.iface.mapCanvas().refresh()
-        else:
-            wps_qr = prepare_xml_query('bounds.xml', 'PropertyIsLike', 'nr_user', self.usids[curids])
-            try:
-                bounds_json = geoserver_client.wps_execute_json(self.geoserver_url, wps_qr)
-            except geoserver_client.GeoServerError:
-                # bounds.xml исторически без outputFormat=json (RawDataOutput
-                # без mimeType) — сервер отдаёт GML text/plain, не JSON;
-                # разбираем как XML отдельно, не через общий JSON-путь.
-                bounds_json = None
-            if bounds_json is None:
-                import requests
-                try:
-                    r = requests.post(f'{self.geoserver_url}/geoserver/wps',
-                                       data=wps_qr, headers={"Content-Type": "text/xml"},
-                                       timeout=geoserver_client.REQUEST_TIMEOUT_S)
-                    root = ET.fromstring(r.text)
-                    xy1 = root[0].text.split(' ')
-                    xy2 = root[1].text.split(' ')
-                    bbox_vals = [float(i.strip()) for i in (xy1 + xy2)]
-                    bbox = transform.transformBoundingBox(QgsRectangle(*bbox_vals))
-                except Exception as e:
-                    QMessageBox.warning(self.dlg, 'pikurr',
-                                         f'Не удалось получить границы объекта: {e}\n'
-                                         f'Показан текущий охват слоя.')
-            self.iface.mapCanvas().setExtent(bbox)
-            self.iface.mapCanvas().refresh()
-
-        wps_qr = prepare_xml_query('aggregate.xml', 'PropertyIsLike', 'nr_user', self.usids[curids])
-        try:
-            jsstat = geoserver_client.wps_execute_json(self.geoserver_url, wps_qr)
+            body = geoserver_client.wps_execute_raw(self.geoserver_url, xml)
         except geoserver_client.GeoServerError as e:
-            QMessageBox.warning(self.dlg, 'pikurr', f'Не удалось получить статистику: {e}')
-            self.dlg.textBrowser.setHtml(f'<p style="color:#a01818">Статистика недоступна: {e}</p>')
+            self._message(f'Не удалось получить границы объекта: {e}', error=True)
             return
 
-        flds = {"Count": "количество", "Sum": "площадь, га"}
+        try:
+            root = ET.fromstring(body)
+            crs = root.attrib.get('crs', '')
+            lower = [float(v) for v in root[0].text.split(' ')]
+            upper = [float(v) for v in root[1].text.split(' ')]
+        except Exception as e:
+            self._message(f'Не удалось разобрать границы объекта: {e}', error=True)
+            return
+
+        if 'EPSG:4326' not in crs and crs:
+            self._message(f'vec:Bounds вернул неожиданную СК ({crs}) — '
+                           f'зум может быть неточным', error=False)
+
+        bbox = QgsRectangle(lower[0], lower[1], upper[0], upper[1])
+        source_crs = QgsCoordinateReferenceSystem('EPSG:4326')
+        dest_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+        if dest_crs.authid() != source_crs.authid():
+            transform = QgsCoordinateTransform(source_crs, dest_crs, QP.instance())
+            bbox = transform.transformBoundingBox(bbox)
+        self.iface.mapCanvas().setExtent(bbox)
+        self.iface.mapCanvas().refresh()
+
+    def _update_stats(self, typename, ogc_filter_xml):
+        tpl_path = os.path.join(self.plugin_dir, 'wps_templates', 'aggregate.xml')
+        with open(tpl_path, encoding='utf-8') as fh:
+            tpl = fh.read()
+        xml = tpl.format(typename=typename, filter=ogc_filter_xml)
+        try:
+            jsstat = geoserver_client.wps_execute_json(self.geoserver_url, xml)
+        except geoserver_client.GeoServerError as e:
+            self._message(f'Не удалось получить статистику: {e}', error=True)
+            self._fill_stats_table([])
+            return
         if 'AggregationFunctions' not in jsstat or 'AggregationResults' not in jsstat:
-            self.dlg.textBrowser.setHtml('<p style="color:#a01818">Сервер вернул неожиданный '
-                                          'формат ответа для статистики.</p>')
+            self._message('Сервер вернул неожиданный формат ответа для статистики', error=True)
+            self._fill_stats_table([])
             return
+        # AggregationFunctions — реальный порядок ["Count","Sum"] (проверено
+        # фактом, не всегда совпадает с порядком в самом запросе, см. round46).
+        funcs = jsstat['AggregationFunctions']
+        count_idx = funcs.index('Count') + 1 if 'Count' in funcs else 1
+        sum_idx = funcs.index('Sum') + 1 if 'Sum' in funcs else 2
+        rows = [(r[0], r[count_idx], r[sum_idx]) for r in jsstat['AggregationResults']]
+        self._fill_stats_table(rows)
 
-        html = f'''<table><thead><tr>
-                    <td> &nbsp;&nbsp;&nbsp;&nbsp; </td>
-                    <td><b>сценарий</b></td>
-                    <td><b>{flds[jsstat["AggregationFunctions"][0]]}&nbsp;&nbsp;&nbsp;&nbsp;</b></td>
-                    <td><b>{flds[jsstat["AggregationFunctions"][1]]}</b></td>
-                    </tr>
-                </thead><tbody>'''
-        scenar = {'meadow': 'луговое с/х', 'forest': 'перевод в л/х',
-                  'clearing': 'с/х после расчистки', 'tillage': 'пахотное с/х'}
-        colors = {'meadow': '#88d9b530', 'forest': '#882C7D2C',
-                  'clearing': '#880000CC', 'tillage': '#88b85c06'}
+    def _fill_stats_table(self, rows):
+        self._last_stats_rows = rows
+        table = self.panel.statsTable
+        total_count = sum(r[1] for r in rows)
+        total_area = sum(r[2] for r in rows)
+        table.setRowCount(len(rows) + (1 if rows else 0))
+        for i, (scenario, count, area) in enumerate(rows):
+            label = SCENARIO_LABELS.get(scenario, scenario)
+            color = SCENARIO_COLORS.get(scenario, '#999999')
+            item_label = QTableWidgetItem(label)
+            item_label.setBackground(QColor(color))
+            table.setItem(i, 0, item_label)
+            table.setItem(i, 1, QTableWidgetItem(str(int(count))))
+            table.setItem(i, 2, QTableWidgetItem(f'{area:.1f}'))
+            pct = round(area / total_area * 100, 1) if total_area else 0
+            table.setItem(i, 3, QTableWidgetItem(f'{pct}'))
+        if rows:
+            i = len(rows)
+            table.setItem(i, 0, QTableWidgetItem('ИТОГО'))
+            table.setItem(i, 1, QTableWidgetItem(str(int(total_count))))
+            table.setItem(i, 2, QTableWidgetItem(f'{total_area:.1f}'))
+            table.setItem(i, 3, QTableWidgetItem('100'))
+        table.resizeColumnsToContents()
 
-        sums = [sum(i) for i in list(zip(*jsstat['AggregationResults']))[1:]]
-        for line in jsstat['AggregationResults']:
-            type_ = line[0]
-            html += f'''<tr>
-                        <td style="background-color:{colors.get(type_, "#88999999")}"/>
-                        <td>{scenar.get(type_, type_)}</td>
-                        <td>{line[1]}  ({round(line[1]/sums[0]*100,1) if sums[0] else 0}%)</td>
-                        <td>{line[2]}  ({round(line[2]/sums[1]*100,1) if sums[1] else 0}%)</td>
-                    </tr>'''
+    def _copy_stats(self):
+        """round48, C4.3: буфер обмена через табуляцию — вставляется в
+        Excel/Word."""
+        lines = ['Сценарий\tОбъектов\tГа\t%']
+        table = self.panel.statsTable
+        for row in range(table.rowCount()):
+            cells = [table.item(row, col).text() if table.item(row, col) else ''
+                     for col in range(table.columnCount())]
+            lines.append('\t'.join(cells))
+        QApplication.clipboard().setText('\n'.join(lines))
+        self._message('Таблица скопирована в буфер обмена')
 
-        html += f'''<tr>
-                    <td> &nbsp;&nbsp;&nbsp;&nbsp; </td>
-                    <td><b>ИТОГО</b></td>
-                    <td><b>{round(sums[0],2)}</b></td>
-                    <td><b>{round(sums[1],2)}</b></td>
-                </tr>
-                </tbody></table>'''
-        self.dlg.textBrowser.setHtml(html)
+    # ------------------------------------------------------------------
+    # AI-оценка и подложка (round48, C3.2/C3.3 — отдельные, не вытесняют)
+    # ------------------------------------------------------------------
+
+    def _on_ai_toggled(self, checked):
+        if checked:
+            self._add_raster_layer()
+        else:
+            if self._raster_layer_id:
+                layer = QgsProject.instance().mapLayer(self._raster_layer_id)
+                if layer is not None:
+                    QgsProject.instance().removeMapLayer(layer)
+                self._raster_layer_id = None
+
+    def _add_raster_layer(self):
+        """round48, B2.2: WMTS через GWC (не XYZ — round46 landmine),
+        сетка EPSG:900913. Headless проверено (isValid + force-fetch +
+        реальный HIT в заголовке GWC, docs/round48-qgis-plugin.md,
+        блок B2) — видимость в реальном GUI подтверждает пользователь
+        (чеклист E4)."""
+        from qgis.core import QgsRasterLayer
+        from urllib.parse import quote
+        caps_url = f"{self.geoserver_url}/geoserver/gwc/service/wmts?REQUEST=GetCapabilities"
+        uri = (f"contextualWMSLegend=0&crs=EPSG:900913&dpiMode=7&format=image/png"
+               f"&layers=pikurr:image_assessment&styles=&tileMatrixSet=EPSG:900913"
+               f"&url={quote(caps_url, safe='')}")
+        layer = QgsRasterLayer(uri, 'AI-оценка', 'wms')
+        if not layer.isValid():
+            self._message('Слой AI-оценки не удалось построить (см. лог)', error=True)
+            self.panel.aiCheckBox.blockSignals(True)
+            self.panel.aiCheckBox.setChecked(False)
+            self.panel.aiCheckBox.blockSignals(False)
+            return
+        self._replace_layer('_raster_layer_id', layer, insert_index=1)
+
+    def _on_basemap_changed(self, _checked):
+        from qgis.core import QgsRasterLayer
+        p = self.panel
+        if p.esriRadio.isChecked():
+            uri = ("type=xyz&url=https://server.arcgisonline.com/ArcGIS/rest/services/"
+                   "World_Imagery/MapServer/tile/%7Bz%7D/%7By%7D/%7Bx%7D&zmax=20&zmin=0"
+                   "&http-header:referer=")
+            name = 'Снимки Esri'
+        elif p.osmRadio.isChecked():
+            uri = ("type=xyz&url=https://tile.openstreetmap.de/%7Bz%7D/%7Bx%7D/%7By%7D.png"
+                   "&zmax=20&zmin=0&http-header:referer=")
+            name = 'OpenStreetMap'
+        else:
+            if self._basemap_layer_id:
+                layer = QgsProject.instance().mapLayer(self._basemap_layer_id)
+                if layer is not None:
+                    QgsProject.instance().removeMapLayer(layer)
+                self._basemap_layer_id = None
+            return
+        layer = QgsRasterLayer(uri, name, 'wms')
+        group = self._get_group()
+        self._replace_layer('_basemap_layer_id', layer, insert_index=group.children().__len__())
