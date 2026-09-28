@@ -8,13 +8,8 @@
         <wps:Reference mimeType="text/xml" xlink:href="http://geoserver/wfs" method="POST">
           <wps:Body>
             <wfs:GetFeature service="WFS" version="1.0.0" outputFormat="GML2" >
-              <wfs:Query typeName="pikurr:fields">
-                <ogc:Filter>
-                    <ogc:PropertyIsLike wildCard="*" singleChar="." escape="!">
-                        <ogc:PropertyName>nr_user</ogc:PropertyName>
-                        <ogc:Literal>{{CQL_FILTER}}*</ogc:Literal>
-                    </ogc:PropertyIsLike>
-                </ogc:Filter>
+              <wfs:Query typeName="{{TYPENAME}}">
+                {{FILTER}}
               </wfs:Query>
             </wfs:GetFeature>
           </wps:Body>

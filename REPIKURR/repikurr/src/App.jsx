@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar'
 import MapView from './components/MapView'
 import WmsLegend from './components/WmsLegend'
 import { getBboxByUser, getStatsByUser, getAllUsers, loadYearDistrictData, getFeatureCount } from './services/geoserver'
+import { fieldsTypeName } from './services/fieldsQuery'
 import { FiMenu } from 'react-icons/fi'
 
 function App() {
@@ -167,7 +168,10 @@ function App() {
 
     try {
       if (zoomCode) {
-        const b = await getBboxByUser(zoomCode)
+        // round49, блок B: год передаётся так же, как для слоя карты
+        // (fieldsTypeName/vectorTypeName ниже) — раньше границы всегда
+        // считались по pikurr:fields без условия года.
+        const b = await getBboxByUser(zoomCode, selectedYear)
         setBbox(b)
       } else {
         setBbox(null)
@@ -177,7 +181,7 @@ function App() {
     try {
       const statsCode = effectiveCode || selectedOblast
       if (statsCode) {
-        const data = await getStatsByUser(statsCode)
+        const data = await getStatsByUser(statsCode, selectedYear)
         setStats(data)
       } else {
         setStats(null)
@@ -199,7 +203,7 @@ function App() {
         ? `nr_user LIKE '${selectedOblast}%'`
         : undefined
   const highlightCqlExpr = [yearCqlExpr, groupCqlExpr].filter(Boolean).join(' AND ') || undefined
-  const vectorTypeName = selectedYear ? 'pikurr:fields' : 'pikurr:fields_latest'
+  const vectorTypeName = fieldsTypeName(selectedYear)
 
   // round37, блок A2.6: если в выбранной группе нет полей за текущий год —
   // явное сообщение вместо пустой карты. Пересчитывается при смене группы

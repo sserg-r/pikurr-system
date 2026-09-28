@@ -1,4 +1,5 @@
 import { WPS_BASE_URL, WMS_BASE_URL, WFS_BASE_URL } from '../constants'
+import { fieldsTypeName, buildOgcFilter } from './fieldsQuery'
 
 async function fetchText(url, options) {
   const resp = await fetch(url, options)
@@ -23,9 +24,13 @@ export async function getAllUsers() {
   return res
 }
 
-export async function getStatsByUser(cqlFilter) {
+// round49, блок B: typeName/фильтр — из fieldsQuery.js (единый источник
+// семантики с App.jsx::vectorTypeName), не отдельная копия. `year` —
+// опциональный (undefined/null => "последние данные", как в плагине).
+export async function getStatsByUser(cqlFilter, year) {
   let tpl = await (await fetch('/getstatsbyuser.xml')).text()
-  tpl = tpl.replace('{{CQL_FILTER}}', cqlFilter)
+  tpl = tpl.replace('{{TYPENAME}}', fieldsTypeName(year))
+           .replace('{{FILTER}}', buildOgcFilter(year, cqlFilter))
   const url = `${WPS_BASE_URL}`
   const res = await fetchJSON(url, {
     method: 'POST',
@@ -35,9 +40,10 @@ export async function getStatsByUser(cqlFilter) {
   return res
 }
 
-export async function getBboxByUser(cqlFilter) {
+export async function getBboxByUser(cqlFilter, year) {
   let tpl = await (await fetch('/getbboxbyuser.xml')).text()
-  tpl = tpl.replace('{{CQL_FILTER}}', cqlFilter)
+  tpl = tpl.replace('{{TYPENAME}}', fieldsTypeName(year))
+           .replace('{{FILTER}}', buildOgcFilter(year, cqlFilter))
   const url = `${WPS_BASE_URL}`
   const xml = await fetchText(url, {
     method: 'POST',
