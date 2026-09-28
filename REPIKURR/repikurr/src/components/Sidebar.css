@@ -122,6 +122,15 @@
   cursor: pointer;
   transition: all 0.2s ease;
 }
+.qgis-download-error {
+  margin: 8px 0 0;
+  padding: 6px 8px;
+  font-size: 0.78rem;
+  color: #7a1f1f;
+  background-color: #fde8e8;
+  border: 1px solid #f3b8b8;
+  border-radius: 6px;
+}
 .download-btn:hover {
   background-color: #3f37c9;
   transform: translateY(-2px);

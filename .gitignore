@@ -23,6 +23,11 @@
 # Разовые скрипты (не часть пайплайна, запускаются вручную)
 !PIKURR/scripts/
 !PIKURR/scripts/**
+# round46: плагин QGIS — прототип, снят с публикации (round45/46),
+# зафиксирован в git как исторический артефакт, не сопровождается,
+# не входит в состав версии (см. pikurr_qgis/PROTOTYPE_NOTICE.md)
+!pikurr_qgis/
+!pikurr_qgis/**
 # 6. РАЗРЕШАЕМ REPIKURR (фронтенд-стек)
 !REPIKURR/
 !REPIKURR/**

@@ -1,0 +1,57 @@
+<!DOCTYPE qgis-layer-definition>
+<qlr>
+  <layer-tree-group checked="Qt::Checked" name="" expanded="1">
+    <customproperties>
+      <Option/>
+    </customproperties>
+    <layer-tree-layer expanded="1" checked="Qt::Unchecked" providerKey="WFS" source_layer="levelsagg_wfs" legend_split_behavior="0" legend_exp="" patch_size="-1,-1" id="levelsagg_wfs" name="Справочник землепользователей"/>
+    <layer-tree-layer expanded="1" checked="Qt::Checked" providerKey="WFS" source_layer="fields_latest_wfs" legend_split_behavior="0" legend_exp="" patch_size="-1,-1" id="fields_latest_wfs" name="Поля (последний год, WFS)"/>
+    <layer-tree-layer expanded="1" checked="Qt::Checked" providerKey="wms" source_layer="image_assessment_gwc" legend_split_behavior="0" legend_exp="" patch_size="-1,-1" id="image_assessment_gwc" name="AI-оценка (текущий год)"/>
+  </layer-tree-group>
+  <maplayers>
+    <maplayer type="vector" hasScaleBasedVisibilityFlag="0" wkbType="NoGeometry" styleCategories="AllStyleCategories">
+      <id>levelsagg_wfs</id>
+      <!-- round46, блок A: levelsagg — виртуальная таблица без геометрии
+           (levelsagg_ready, справочник rn/usname/usern_co), 313 строк,
+           лёгкая — грузится целиком, без ограничения по охвату -->
+      <datasource>pagingEnabled='true' preferCoordinatesForWfsT11='false' restrictToRequestBBOX='0' srsname='' typename='pikurr:levelsagg' url='https://geobotany.of.by/geoserver/pikurr/wfs' version='2.0.0'</datasource>
+      <layername>Справочник землепользователей</layername>
+      <provider>WFS</provider>
+    </maplayer>
+    <maplayer type="vector" hasScaleBasedVisibilityFlag="0" wkbType="MultiPolygon" styleCategories="AllStyleCategories">
+      <id>fields_latest_wfs</id>
+      <!-- round46, блок A.3: полный охват — 55 784 объекта, 98.6 МБ,
+           ~116с (неприемлемо); один район (2212, самый крупный) — 18.6 МБ,
+           ~22с (всё ещё тяжело); bbox размером с типичный экран карты
+           (~5x5 км, z13) — 232 КБ, 0.8с. Поэтому restrictToRequestBBOX='1'
+           — QGIS запрашивает только объекты в текущей области просмотра,
+           не весь слой -->
+      <datasource>pagingEnabled='true' preferCoordinatesForWfsT11='false' restrictToRequestBBOX='1' srsname='EPSG:3857' typename='pikurr:fields_latest' url='https://geobotany.of.by/geoserver/pikurr/wfs' version='2.0.0'</datasource>
+      <layername>Поля (последний год, WFS)</layername>
+      <provider>WFS</provider>
+    </maplayer>
+    <maplayer type="raster" hasScaleBasedVisibilityFlag="0" autoRefreshTime="0" refreshOnNotifyMessage="" autoRefreshEnabled="0" styleCategories="AllStyleCategories" refreshOnNotifyEnabled="0">
+      <extent>
+        <xmin>2942825</xmin>
+        <ymin>7321138</ymin>
+        <xmax>3443946</xmax>
+        <ymax>7583470</ymax>
+      </extent>
+      <id>image_assessment_gwc</id>
+      <!-- round46, блок A.2: только XYZ/тайловое подключение реально
+           попадает в кэш GWC — обычный WMS с произвольным размером
+           канвы (как шлёт QGIS "WMS"-слой) на /gwc/service/wms?tiled=true
+           отдаёт 400 "tile dimensions do not match grid set (256x256)";
+           /geoserver/wms (не-GWC) вообще не отдаёт geowebcache-cache-result
+           — рендерит вживую всегда. Проверено фактом (round46) -->
+      <datasource>type=xyz&amp;url=https://geobotany.of.by/geoserver/gwc/service/wms%3Fservice%3DWMS%26request%3DGetMap%26version%3D1.1.1%26layers%3Dpikurr:image_assessment%26styles%3D%26format%3Dimage/png%26transparent%3Dtrue%26tiled%3Dtrue%26width%3D256%26height%3D256%26srs%3DEPSG:3857%26bbox%3D%7Bxmin%7D,%7Bymin%7D,%7Bxmax%7D,%7Bymax%7D&amp;zmax=18&amp;zmin=0&amp;http-header:referer=</datasource>
+      <layername>AI-оценка (текущий год)</layername>
+      <srs>
+        <spatialrefsys nativeFormat="Wkt">
+          <authid>EPSG:3857</authid>
+        </spatialrefsys>
+      </srs>
+      <provider>wms</provider>
+    </maplayer>
+  </maplayers>
+</qlr>

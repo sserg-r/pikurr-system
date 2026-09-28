@@ -28,6 +28,7 @@ export default function Sidebar({
   const [districtId, setDistrictId] = useState('');
   const [nrUser, setNrUser]       = useState('');
   const [showHelp, setShowHelp]   = useState(false);
+  const [qgisDownloadError, setQgisDownloadError] = useState('');
 
   // При смене года — сбрасываем район/землепользователь если у них нет данных за этот год
   useEffect(() => {
@@ -77,21 +78,45 @@ export default function Sidebar({
     onReset?.();
   }
 
-  const downloadQGISFiles = () => {
-    const zipLink = document.createElement('a');
-    zipLink.href = '/pikurr_qgis.zip';
-    zipLink.download = 'pikurr_qgis.zip';
-    document.body.appendChild(zipLink);
-    zipLink.click();
-    document.body.removeChild(zipLink);
-    setTimeout(() => {
-      const txtLink = document.createElement('a');
-      txtLink.href = '/pikurr_qgis_readme.txt';
-      txtLink.download = 'pikurr_qgis_readme.txt';
-      document.body.appendChild(txtLink);
-      txtLink.click();
-      document.body.removeChild(txtLink);
-    }, 100);
+  // round46, блок B.1: раньше клик по кнопке безусловно создавал и
+  // "нажимал" <a download> — при пропаже файла на сервере try_files
+  // отдаёт index.html (200, text/html) под именем архива, и пользователь
+  // тихо получает битый файл вместо архива/qlr. Теперь перед скачиванием
+  // каждый файл проверяется по содержимому (код ответа + Content-Type —
+  // не HTML — и ненулевой размер), а не только по факту клика.
+  async function fetchAndSaveFile(url, filename) {
+    let resp;
+    try {
+      resp = await fetch(url);
+    } catch {
+      throw new Error(`не удалось обратиться к серверу (${url})`);
+    }
+    const contentType = resp.headers.get('content-type') || '';
+    const contentLength = Number(resp.headers.get('content-length') || '0');
+    if (!resp.ok || contentType.includes('text/html') || contentLength === 0) {
+      throw new Error(`файл недоступен (${url}, код ${resp.status}, тип "${contentType}")`);
+    }
+    const blob = await resp.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(objectUrl);
+  }
+
+  const downloadQGISFiles = async () => {
+    setQgisDownloadError('');
+    try {
+      await fetchAndSaveFile('/pikurr_layers.qlr', 'pikurr_layers.qlr');
+      await fetchAndSaveFile('/pikurr_qgis_instructions.txt', 'pikurr_qgis_instructions.txt');
+    } catch (e) {
+      setQgisDownloadError(
+        `Не удалось скачать файл для QGIS: ${e.message}. Попробуйте позже или сообщите администратору.`
+      );
+    }
   };
 
   return (
@@ -113,13 +138,17 @@ export default function Sidebar({
         </div>
       </div>
 
-      {/* QGIS плагин */}
+      {/* Доступ из QGIS (round46: файл определения слоёв вместо
+          плагина-прототипа — см. docs/round46-qgis-route.md) */}
       <div className="sidebar-section">
-        <div className="section-title"><FiPackage size={16} /><span>Плагин для QGIS</span></div>
-        <button className="download-btn" onClick={downloadQGISFiles} title="Скачать плагин для QGIS">
+        <div className="section-title"><FiPackage size={16} /><span>Данные для QGIS</span></div>
+        <button className="download-btn" onClick={downloadQGISFiles} title="Скачать файл слоёв для QGIS">
           <FiDownload size={15} />
-          скачать плагин
+          скачать для QGIS
         </button>
+        {qgisDownloadError && (
+          <p className="qgis-download-error" role="alert">{qgisDownloadError}</p>
+        )}
       </div>
 
       {/* Базовые карты */}
