@@ -58,6 +58,32 @@ yc iam service-account get pikurr-autostart --folder-id <FOLDER_ID>
 предусмотрена — она потребовала бы кастомной роли на уровне организации,
 что для одной автоматизации избыточно.
 
+**round42, блок C: проверка перед выполнением** — при сверке этого README
+с официальной документацией CLI (сентябрь 2026) команда
+`add-access-binding` найдена в справке для `yc compute instance-group`, но
+НЕ найдена как отдельная документированная страница для `yc compute
+instance` (для одиночного инстанса) — при этом на уровне самого API
+(`compute.v1.InstanceService.setAccessBindings`/`updateAccessBindings`)
+такая операция для инстансов существует. Похоже на пробел в
+документации/поисковой индексации, а не на реальное отсутствие
+подкоманды (`yc` обычно генерирует `add-access-binding` для любого
+ресурса, поддерживающего access bindings на уровне API) — но фактом это
+не подтверждено. **Первый шаг — проверка, что подкоманда вообще
+существует, ДО применения:**
+
+```
+yc compute instance add-access-binding --help
+```
+
+Если команда выведет справку (флаги `--role`, `--subject` и т.п.) —
+можно использовать её как в шаге ниже. **Если команда вернёт ошибку
+"unknown command"** — рабочая замена (тот же результат, тот же
+единственный инстанс, без прав на весь каталог) — через консоль
+Yandex Cloud: Compute Cloud → инстанс REPIKURR → вкладка "Права
+доступа" ("Access bindings") → добавить `serviceAccount:<SA_ID>` с
+ролью `compute.editor` вручную. Дальнейшие шаги (проверка привязки,
+отсутствие привязки на каталоге) актуальны в обоих случаях.
+
 ```
 yc compute instance add-access-binding <INSTANCE_ID> \
   --role compute.editor \
@@ -143,6 +169,28 @@ yc serverless trigger get pikurr-autostart-timer --folder-id <FOLDER_ID>
 недостаточными правами сервисного аккаунта выглядит в консоли нормально и
 при этом ничего не делает — сам факт `ACTIVE` у триггера и функции НЕ
 подтверждает, что автозапуск работает. Обязательна проверка шагом 5.
+
+---
+
+## Шаг 4a. Приостановка на время обслуживания и возврат (round42, блок C)
+
+**Без этого шага любая ручная остановка ВМ (например, для смены RAM —
+см. `docs/round40-capacity.md`/`docs/round41-config-decision.md`) будет
+отменена функцией максимум через 2 минуты** — таймер сработает, увидит
+`STOPPED` и снова запустит машину.
+
+Перед плановой остановкой ВМ:
+```
+yc serverless trigger pause pikurr-autostart-timer --folder-id <FOLDER_ID>
+```
+**Проверить**: `yc serverless trigger get pikurr-autostart-timer --folder-id <FOLDER_ID>`
+→ `status: PAUSED` (не `ACTIVE`).
+
+После обслуживания — вернуть автозапуск:
+```
+yc serverless trigger resume pikurr-autostart-timer --folder-id <FOLDER_ID>
+```
+**Проверить**: тот же `get` → `status: ACTIVE`.
 
 ---
 

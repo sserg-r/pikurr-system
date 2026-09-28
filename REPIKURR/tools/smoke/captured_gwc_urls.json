@@ -1,4 +1,4 @@
 {
-  "pikurr:fields_latest": "https://geobotany.of.by/geoserver/gwc/service/wms?service=WMS&request=GetMap&layers=pikurr%3Afields_latest&styles=&format=image%2Fpng&transparent=true&version=1.1.1&tiled=true&width=256&height=256&srs=EPSG%3A3857&time=20260925103815&bbox=3209132.19552484,7357522.594617924,3287403.712488861,7435794.111581949",
-  "pikurr:image_assessment": "https://geobotany.of.by/geoserver/gwc/service/wms?service=WMS&request=GetMap&layers=pikurr%3Aimage_assessment&styles=&format=image%2Fpng&transparent=true&version=1.1.1&tiled=true&width=256&height=256&srs=EPSG%3A3857&bbox=3015899.3880199143,7484713.809684461,3018345.3729250403,7487159.794589586"
+  "pikurr:fields_latest": "https://geobotany.of.by/geoserver/gwc/service/wms?service=WMS&request=GetMap&layers=pikurr%3Afields_latest&styles=&format=image%2Fpng&transparent=true&version=1.1.1&tiled=true&width=256&height=256&srs=EPSG%3A3857&time=20260928074645&bbox=3130860.6785608195,7200979.560689886,3209132.19552484,7279251.0776539035",
+  "pikurr:image_assessment": "https://geobotany.of.by/geoserver/gwc/service/wms?service=WMS&request=GetMap&layers=pikurr%3Aimage_assessment&styles=&format=image%2Fpng&transparent=true&version=1.1.1&tiled=true&width=256&height=256&srs=EPSG%3A3857&bbox=3015899.3880199143,7482267.824779336,3018345.3729250403,7484713.809684461"
 }
