@@ -28,6 +28,16 @@ round36 A): внутренний засев уже один раз отрапо�
     python3 gwc_http_seed.py --base-url ... --layer ... \
         --zoom-start 9 --zoom-stop 13 --log /tmp/seed_verify.ndjson
     # смотреть "hit"/("hit"+"miss") в итоговой JSON-строке на stdout
+
+    # round46, блок E: предупреждение о доле мелких/пустых тайлов — ТОЛЬКО
+    # для bbox с заведомым содержимым (как в tiles_with_data.json), не для
+    # запуска без --bbox (полный охват слоя). См. комментарий у
+    # --warn-small-fraction ниже — фактом проверено, что при полном охвате
+    # доля 20%+ есть на КАЖДОМ зуме диапазона засева (z8-z12: 21-63%) на
+    # полностью исправном кэше, и растёт с зумом, а не падает:
+    python3 gwc_http_seed.py --base-url ... --layer ... \
+        --bbox 2959641.7,7450470.0,2964533.7,7455362.0 --zoom-start 13 --zoom-stop 13 \
+        --log /tmp/seed_check.ndjson --warn-small-fraction 0.2
 """
 import argparse
 import json
@@ -146,6 +156,29 @@ def main():
     p.add_argument("--user", default=os.environ.get("GEOSERVER_USER"))
     p.add_argument("--password", default=os.environ.get("GEOSERVER_PASSWORD"))
     p.add_argument("--timeout-s", type=float, default=30.0)
+    # round46, блок E: изначальный фикс. порог 20% (round32) откалиброван
+    # на ПРИЦЕЛЬНЫХ bbox с заведомым содержимым (tiles_with_data.json,
+    # центроиды полей) — там он верен (проверено фактом: 0/20 на z13).
+    # Полноохватный засев (--bbox по умолчанию из GWC REST — весь
+    # прямоугольник области, большая часть которого не занята полями)
+    # нарушает это же правило ВСЕГДА и на ЛЮБОМ зуме диапазона засева —
+    # доля растёт С РОСТОМ зума, а не падает: z8 25-50%, z9 21-32%,
+    # z10 38-41%, z11 52-56%, z12 57-63% (все — на реальном, исправно
+    # работающем кэше, никакой порчи). Проблема не в зуме — в том, что
+    # прямоугольная сетка засева накрывает много пустого фона за
+    # пределами полей. Поэтому предупреждение теперь ВЫКЛЮЧЕНО по
+    # умолчанию (доля по-прежнему считается и печатается в JSON), и
+    # включается явно этим флагом для случаев, когда bbox заведомо
+    # соответствует реальному содержимому (как в verify_tiles_have_data.py) —
+    # там правило работает как и раньше.
+    p.add_argument(
+        "--warn-small-fraction", type=float, default=None, metavar="THRESHOLD",
+        help=(
+            "включить предупреждение о доле мелких/пустых тайлов (0..1); "
+            "имеет смысл только для BBOX с заведомым содержимым, не для "
+            "полноохватного засева всей области — см. комментарий выше"
+        ),
+    )
     args = p.parse_args()
 
     auth = (args.user, args.password) if args.user else None
@@ -233,10 +266,18 @@ def main():
             "interrupted": _stop.is_set(),
         }, ensure_ascii=False),
     )
-    if small_frac > 0.20:
+    if args.warn_small_fraction is not None and small_frac > args.warn_small_fraction:
         print(
-            f"[gwc_http_seed] ПРЕДУПРЕЖДЕНИЕ: доля мелких/пустых ответов {small_frac:.1%} > 20% "
-            f"— правило непустых тайлов (round32) нарушено, прогрев не считать валидным без разбора причины",
+            f"[gwc_http_seed] ПРЕДУПРЕЖДЕНИЕ: доля мелких/пустых ответов {small_frac:.1%} > "
+            f"{args.warn_small_fraction:.0%} — правило непустых тайлов (round32) нарушено для "
+            f"BBOX с заведомым содержимым, прогрев не считать валидным без разбора причины",
+            file=sys.stderr,
+        )
+    elif args.warn_small_fraction is None:
+        print(
+            f"[gwc_http_seed] доля мелких/пустых ответов {small_frac:.1%} — предупреждение выключено "
+            f"(--warn-small-fraction не задан; для полноохватного засева это ожидаемо, см. round46 "
+            f"блок E — доля растёт с зумом и не говорит о порче кэша)",
             file=sys.stderr,
         )
 
