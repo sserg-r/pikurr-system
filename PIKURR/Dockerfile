@@ -56,6 +56,16 @@ COPY . .
 # 6. Указываем путь к коду, чтобы импорты работали
 ENV PYTHONPATH=/app
 
+# round43, блок C: прослеживаемость версии кода в манифесте пакета
+# (etl_git_commit) — git не устанавливается в образ (не тянуть системную
+# зависимость ради однократного вызова на этапе сборки), вместо этого
+# коммит передаётся снаружи через build-arg и запекается в образ как ENV.
+# Сборка: docker build --build-arg ETL_GIT_COMMIT=$(git rev-parse HEAD) ...
+# Без явной передачи — остаётся "unknown" (не пусто, чтобы отличать от
+# "не удалось определить" при рантайм-фолбэке в package.py).
+ARG ETL_GIT_COMMIT=unknown
+ENV ETL_GIT_COMMIT=${ETL_GIT_COMMIT}
+
 ENV FORCE_REBUILD=2026-09-15-onnx-round7
 # Команда по умолчанию (можно переопределить в docker-compose)
 # CMD ["python", "pipeline.py"]

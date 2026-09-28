@@ -1098,19 +1098,46 @@ def _truncate_gwc_layer_if_cached(store_name: str, auth: tuple):
         logger.warning(f"  [{store_name}] masstruncate не выполнен: {e}")
 
 
+def _count_gwc_cached_tiles(store_name: str) -> int:
+    """Число файлов-тайлов на диске для слоя (round43, блок B) — прямой,
+    независимый от REST-статуса GWC признак завершённости засева. Найдено
+    фактом (round43, блок A): реальная запись файлов на диск заканчивается
+    за 5-90с и дальше не растёт, тогда как REST-статус (`long-array-array`)
+    либо продолжает репортить неполный прогресс, либо (при определённой
+    нагрузке) вовсе начинает возвращать неразбираемый JSON — использовать
+    его как единственный критерий завершения нельзя.
+    """
+    base = SCRIPT_DIR / "geoserver_data" / "gwc" / f"pikurr_{store_name}"
+    if not base.is_dir():
+        return 0
+    return sum(1 for p in base.rglob("*") if p.is_file())
+
+
+# round43, блок B: сколько подряд опросов БЕЗ роста числа файлов на диске
+# считать завершением засева, и с каким интервалом опрашивать. 2×15с=30с —
+# с большим запасом над фактически наблюдённым временем полной записи
+# (round43, блок A: 1807/1807 файлов уже на первом опросе, 5с от старта).
+GWC_SEED_DISK_STABLE_POLLS = int(os.getenv("GWC_SEED_DISK_STABLE_POLLS", "2"))
+GWC_SEED_POLL_INTERVAL_S = int(os.getenv("GWC_SEED_POLL_INTERVAL_S", "15"))
+
+
 def _seed_gwc_layer(store_name: str, auth: tuple) -> dict:
     """Засевает тайловый кэш GWC для одного слоя (round35, блок C2).
 
     Асинхронный REST-запрос (`type=seed`) — GWC сразу возвращает 200 и
-    сеет в фоне; прогресс опрашивается через GET того же URL (`.json`)
-    до тех пор, пока список активных задач не опустеет или не истечёт
-    `GWC_SEED_MAX_WAIT_S` (предохранитель от зависшей доставки, не
-    оценка реального времени — реальное время меряется отдельно, C2/C3
-    отчёта). Ошибка засева НЕ бросает исключение — возвращает
-    {"ok": False, ...}, вызывающий код обязан не останавливать доставку
-    (правило ТЗ: неудачный засев не должен оставлять витрину без
-    данных — без засева тайлы просто рендерятся по требованию, как до
-    этого раунда).
+    сеет в фоне. Основной признак завершения (round43, блок B) — число
+    файлов в кэше на диске перестало расти
+    (`GWC_SEED_DISK_STABLE_POLLS` опросов подряд без изменений); REST-
+    статус (`long-array-array`) опрашивается и логируется для
+    диагностики и как резервный путь, но не является больше
+    единственным критерием (round43, блок A показал, что он не всегда
+    отражает реальное состояние и может начать возвращать битый JSON
+    под нагрузкой). `GWC_SEED_MAX_WAIT_S` остаётся аварийным потолком
+    ожидания на случай реального зависания — не поднимается. Ошибка
+    засева НЕ бросает исключение — возвращает {"ok": False, ...},
+    вызывающий код обязан не останавливать доставку (правило ТЗ:
+    неудачный засев не должен оставлять витрину без данных — без
+    засева тайлы просто рендерятся по требованию, как до этого раунда).
     """
     layer_name = f"{GEOSERVER_WORKSPACE}:{store_name}"
     seed_url = f"{GEOSERVER_URL}/gwc/rest/seed/{layer_name}.json"
@@ -1145,8 +1172,30 @@ def _seed_gwc_layer(store_name: str, auth: tuple) -> dict:
     logger.info(f"  [{store_name}] засев GWC запущен (z{GWC_SEED_ZOOM_START}-{GWC_SEED_ZOOM_STOP}, {GWC_SEED_THREAD_COUNT} потока)")
 
     last_done, last_total = None, None
+    last_file_count = _count_gwc_cached_tiles(store_name)
+    stable_polls = 0
     while time.monotonic() - t0 < GWC_SEED_MAX_WAIT_S:
-        time.sleep(15)
+        time.sleep(GWC_SEED_POLL_INTERVAL_S)
+        elapsed = time.monotonic() - t0
+
+        # round43, блок B: основной признак завершения — файлы на диске
+        # перестали расти. Проверяется независимо от REST-статуса ниже
+        # (тот может к этому моменту уже не отвечать корректно, round43
+        # блок A, находка №3).
+        file_count = _count_gwc_cached_tiles(store_name)
+        if file_count == last_file_count and file_count > 0:
+            stable_polls += 1
+        else:
+            stable_polls = 0
+        last_file_count = file_count
+        if stable_polls >= GWC_SEED_DISK_STABLE_POLLS:
+            logger.info(
+                f"  [{store_name}] запись на диск стабильна ({file_count} файлов, "
+                f"без роста {stable_polls * GWC_SEED_POLL_INTERVAL_S}с) — "
+                f"засев считается завершённым за {elapsed:.1f}с"
+            )
+            return {"ok": True, "layer": store_name, "seconds": round(elapsed, 1), "files": file_count}
+
         try:
             status_resp = requests.get(seed_url, auth=auth, timeout=15)
         except requests.RequestException as e:
@@ -1168,24 +1217,18 @@ def _seed_gwc_layer(store_name: str, auth: tuple) -> dict:
         # диске после "завершения" за 5с оказался в разы меньше расчётного).
         active = tasks.get("long-array-array") if isinstance(tasks, dict) else None
         if not active:
-            elapsed = time.monotonic() - t0
             # round36, блок A: пустой список задач — законное завершение
-            # (GWCTask переходит RUNNING(1)→DONE(2) и вычищается drain()),
-            # подтверждено декомпиляцией GWC и повторным фактом на
-            # эмуляторе (реальное число файлов на диске сошлось с
-            # независимым расчётом по tile_math.py в 100% прогонов,
-            # docs/round36-seeding-fix.md, блок A). Тем не менее пишем
-            # последний известный прогресс по правилу "готово ≠ сделано"
-            # (CLAUDE.md) — для последующего разбора, если возникнет
-            # расхождение на другой машине/версии GWC.
+            # (GWCTask переходит RUNNING(1)→DONE(2) и вычищается drain()).
+            # round43, блок B: оставлено как резервный путь завершения —
+            # основной путь теперь стабильность файлов на диске выше.
             if last_done is not None and last_total:
                 ratio = last_done / last_total
                 logger.info(
                     f"  [{store_name}] последний известный прогресс перед опустением списка задач: "
                     f"{last_done}/{last_total} ({ratio:.0%})"
                 )
-            logger.info(f"  [{store_name}] засев GWC завершён за {elapsed:.1f}с")
-            return {"ok": True, "layer": store_name, "seconds": round(elapsed, 1)}
+            logger.info(f"  [{store_name}] засев GWC завершён за {elapsed:.1f}с (по статусу GWC)")
+            return {"ok": True, "layer": store_name, "seconds": round(elapsed, 1), "files": file_count}
         # round36, блок A/D: КАЖДАЯ строка long-array-array — это один
         # ПОТОК той же самой задачи и репортит ОДИНАКОВОЕ полное значение
         # tilesTotal (не свою долю) — GWCTask.getTilesTotal() общий на
@@ -1200,11 +1243,11 @@ def _seed_gwc_layer(store_name: str, auth: tuple) -> dict:
         done = sum(t[0] for t in active)
         total = max(t[1] for t in active)
         last_done, last_total = done, total
-        logger.info(f"  [{store_name}] засев GWC: {done}/{total} тайлов ({time.monotonic()-t0:.0f}с)")
+        logger.info(f"  [{store_name}] засев GWC: {done}/{total} тайлов ({elapsed:.0f}с), файлов на диске: {file_count}")
 
     elapsed = time.monotonic() - t0
     logger.warning(f"  [{store_name}] засев GWC не завершился за {GWC_SEED_MAX_WAIT_S}с — оставлен фоном, доставка продолжается")
-    return {"ok": False, "layer": store_name, "error": f"не завершился за {GWC_SEED_MAX_WAIT_S}с (оставлен фоном)", "seconds": round(elapsed, 1)}
+    return {"ok": False, "layer": store_name, "error": f"не завершился за {GWC_SEED_MAX_WAIT_S}с (оставлен фоном)", "seconds": round(elapsed, 1), "files": last_file_count}
 
 
 def seed_gwc_cache(auth: tuple) -> dict:

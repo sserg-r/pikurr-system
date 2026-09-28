@@ -64,6 +64,13 @@ REPIKURR/repikurr/build/
 # round34, блок B: зависимости дымового Playwright-сценария
 REPIKURR/tools/smoke/node_modules/
 
+# round43, блок D: локальные архивы бэкапа конфигурации VPS
+# (backup_config_offsite.sh, каталог по умолчанию — корень репозитория)
+# — содержат секреты (geoserver_data/security, deliver.env, .env),
+# никогда не в git. Уже покрыто правилом "запрещаем всё" (строка 2) —
+# запись здесь только для явности, на случай изменения структуры выше.
+config_backups_offsite/
+
 # 5. ЧИСТИМ МУСОР (Даже в разрешенных папках)
 # Эти правила должны быть ниже разрешающих, чтобы перекрыть их
 PIKURR/docker-compose.yml
