@@ -110,8 +110,8 @@ export default function Sidebar({
   const downloadQGISFiles = async () => {
     setQgisDownloadError('');
     try {
-      await fetchAndSaveFile('/pikurr_layers.qlr', 'pikurr_layers.qlr');
-      await fetchAndSaveFile('/pikurr_qgis_instructions.txt', 'pikurr_qgis_instructions.txt');
+      await fetchAndSaveFile('/pikurr_qgis.zip', 'pikurr_qgis.zip');
+      await fetchAndSaveFile('/pikurr_qgis_readme.txt', 'pikurr_qgis_readme.txt');
     } catch (e) {
       setQgisDownloadError(
         `Не удалось скачать файл для QGIS: ${e.message}. Попробуйте позже или сообщите администратору.`
@@ -138,13 +138,15 @@ export default function Sidebar({
         </div>
       </div>
 
-      {/* Доступ из QGIS (round46: файл определения слоёв вместо
-          плагина-прототипа — см. docs/round46-qgis-route.md) */}
+      {/* QGIS плагин (round46: попытка заменить на WFS/.qlr отклонена
+          пользователем — неудобная фильтрация по иерархическим группам,
+          сложная статистика, растровый слой так и не заработал; решение —
+          довести плагин в будущем раунде, см. docs/round46-qgis-route.md) */}
       <div className="sidebar-section">
-        <div className="section-title"><FiPackage size={16} /><span>Данные для QGIS</span></div>
-        <button className="download-btn" onClick={downloadQGISFiles} title="Скачать файл слоёв для QGIS">
+        <div className="section-title"><FiPackage size={16} /><span>Плагин для QGIS</span></div>
+        <button className="download-btn" onClick={downloadQGISFiles} title="Скачать плагин для QGIS">
           <FiDownload size={15} />
-          скачать для QGIS
+          скачать плагин
         </button>
         {qgisDownloadError && (
           <p className="qgis-download-error" role="alert">{qgisDownloadError}</p>

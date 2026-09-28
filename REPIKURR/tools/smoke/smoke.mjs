@@ -461,23 +461,26 @@ async function main() {
 
   // ---- 13. Кнопка скачивания QGIS-файла (round46, блок C.5) --------------
   // По содержимому, не по факту клика: проверяем реальные HTTP-ответы на
-  // /pikurr_layers.qlr и /pikurr_qgis_instructions.txt (round45, A.1 —
-  // раньше при пропаже файла try_files тихо отдавал index.html/200 под
-  // именем архива; критерий здесь — код 200, Content-Type не text/html,
-  // ненулевой размер).
+  // /pikurr_qgis.zip и /pikurr_qgis_readme.txt (round45, A.1 — раньше при
+  // пропаже файла try_files тихо отдавал index.html/200 под именем архива;
+  // критерий здесь — код 200, Content-Type не text/html, ненулевой размер).
+  // round46 сначала переключал кнопку на pikurr_layers.qlr/инструкцию
+  // (WFS-схема), но решение пользователя по итогам раунда — вернуться к
+  // плагину (см. docs/round46-qgis-route.md, вердикт «отклонено»), эта
+  // проверка возвращена на исходные файлы.
   async function checkDownloadable(path) {
     const resp = await page.request.get(`${BASE_URL}${path}`)
     const ct = resp.headers()['content-type'] || ''
     const len = Number(resp.headers()['content-length'] || '0')
     return { ok: resp.ok() && !ct.includes('text/html') && len > 0, status: resp.status(), ct, len }
   }
-  const qlrCheck = await checkDownloadable('/pikurr_layers.qlr')
-  const instrCheck = await checkDownloadable('/pikurr_qgis_instructions.txt')
+  const zipCheck = await checkDownloadable('/pikurr_qgis.zip')
+  const readmeCheck = await checkDownloadable('/pikurr_qgis_readme.txt')
   record(
     '13. Кнопка скачивания QGIS-файла (проверка по содержимому)',
-    qlrCheck.ok && instrCheck.ok,
-    `qlr: код=${qlrCheck.status} тип="${qlrCheck.ct}" размер=${qlrCheck.len} | ` +
-      `инструкция: код=${instrCheck.status} тип="${instrCheck.ct}" размер=${instrCheck.len}`
+    zipCheck.ok && readmeCheck.ok,
+    `zip: код=${zipCheck.status} тип="${zipCheck.ct}" размер=${zipCheck.len} | ` +
+      `readme: код=${readmeCheck.status} тип="${readmeCheck.ct}" размер=${readmeCheck.len}`
   )
 
   await browser.close()
