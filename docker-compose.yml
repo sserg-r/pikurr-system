@@ -56,6 +56,13 @@ services:
     build:
       context: ./PIKURR
       dockerfile: Dockerfile
+      # round43 (блок C) завёл ARG/ENV ETL_GIT_COMMIT в PIKURR/Dockerfile
+      # для трассируемости версии в манифесте пакета, но забыл занести этот
+      # build-arg сюда — правка была применена только вручную на стенде.
+      # round44, блок C: занесено в репозиторий, чтобы любой checkout
+      # воспроизводил тот же build без ручного шага.
+      args:
+        ETL_GIT_COMMIT: ${ETL_GIT_COMMIT:-unknown}
     depends_on:
       db:
         condition: service_healthy

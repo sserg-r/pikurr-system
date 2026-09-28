@@ -45,6 +45,26 @@ def lonlat_to_bbox_3857(lon, lat, z):
     return tile_bbox_3857(x, y, z)
 
 
+def lonlat_point_to_3857(lon, lat):
+    """Точка lon/lat (EPSG:4326) -> EPSG:3857, стандартная формула
+    сферического Меркатора (round44, блок B: нужна для перевода
+    nativeBoundingBox слоя, который GeoServer REST отдаёт в EPSG:4326,
+    в единицы tile_range_for_bbox_3857). Сверено фактом с bbox'ами
+    round43 (docs/round43-freeze.md) — совпадает до микрометра.
+    """
+    x = lon * ORIGIN / 180.0
+    y = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) * ORIGIN / math.pi
+    return x, y
+
+
+def bbox_lonlat_to_3857(bbox_lonlat):
+    """[minx,miny,maxx,maxy] в EPSG:4326 -> то же в EPSG:3857."""
+    minx, miny, maxx, maxy = bbox_lonlat
+    x0, y0 = lonlat_point_to_3857(minx, miny)
+    x1, y1 = lonlat_point_to_3857(maxx, maxy)
+    return [x0, y0, x1, y1]
+
+
 def tile_range_for_bbox_3857(bbox, z):
     """Диапазон [tx_min, tx_max, ty_min, ty_max] тайлов, пересекающих bbox
     (EPSG:3857, [minx,miny,maxx,maxy]) на уровне z (XYZ-конвенция, как

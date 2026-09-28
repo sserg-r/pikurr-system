@@ -51,6 +51,10 @@ CORE_FILES=(deliver.py healthcheck.py watchdog.py)
 declare -A SUPPORT_FILES=(
     ["docs/round32_assets/tiles_with_data.json"]="support_data/tiles_with_data.json"
     ["REPIKURR/tools/smoke/captured_gwc_urls.json"]="support_data/captured_gwc_urls.json"
+    # round44, блок B: deliver.py импортирует tile_math.py (sys.path на
+    # <VPS_REMOTE_DIR>/tools/) для сверки итога засева GWC с расчётом —
+    # без этого файла на плоском VPS импорт упадёт при первой доставке.
+    ["REPIKURR/tools/tile_math.py"]="tools/tile_math.py"
 )
 
 drift_found=0

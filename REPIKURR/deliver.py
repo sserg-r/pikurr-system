@@ -38,6 +38,11 @@ from pathlib import Path
 
 import requests
 
+# round44, блок B: сверка итога засева GWC с независимым геометрическим
+# расчётом (tile_math.py) — используется в _expected_gwc_tile_count ниже.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+from tile_math import tile_range_for_bbox_3857, bbox_lonlat_to_3857  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Конфигурация (переопределяется через переменные окружения)
 # ---------------------------------------------------------------------------
@@ -1120,6 +1125,84 @@ def _count_gwc_cached_tiles(store_name: str) -> int:
 GWC_SEED_DISK_STABLE_POLLS = int(os.getenv("GWC_SEED_DISK_STABLE_POLLS", "2"))
 GWC_SEED_POLL_INTERVAL_S = int(os.getenv("GWC_SEED_POLL_INTERVAL_S", "15"))
 
+# round44, блок B: "файлы перестали расти" — признак затишья, не признак
+# ДОСТИЖЕНИЯ цели (можно остановиться на плато ниже реального объёма
+# слоя). Порог предупреждения: round43 показал точное совпадение (0%)
+# факта с расчётом tile_math на z10-z12 в норме — поэтому порог не "0
+# терпимо", а достаточно большой, чтобы не шуметь на легитимном крае
+# bbox (метатайл, частично выходящий за границу слоя, GWC засчитывает
+# как обработанный без записи файла — см. комментарий выше про ~7.5% от
+# ЦЕЛИ GWC, другая база сравнения) и на малом числе тайлов z9/z10, где
+# один пропущенный крайний тайл даёт крупный процент. 10% ИЛИ меньше
+# GWC_SEED_SHORTFALL_WARN_MIN_TILES тайлов — считается шумом, не недосевом.
+GWC_SEED_SHORTFALL_WARN_PCT = float(os.getenv("GWC_SEED_SHORTFALL_WARN_PCT", "10"))
+GWC_SEED_SHORTFALL_WARN_MIN_TILES = int(os.getenv("GWC_SEED_SHORTFALL_WARN_MIN_TILES", "3"))
+
+
+def _expected_gwc_tile_count(store_name: str, auth: tuple) -> int | None:
+    """Ожидаемое число тайлов z=GWC_SEED_ZOOM_START..ZOOM_STOP по реальным
+    границам слоя (round44, блок B) — независимая от REST-статуса GWC и
+    от "файлы перестали расти" сверка итога засева с геометрией
+    (`tile_math.tile_range_for_bbox_3857`, тот же расчёт, что подтвердил
+    точное совпадение в round43, докс `docs/round43-freeze.md`).
+    `None`, если REST не отдал nativeBoundingBox — сверка необязательна,
+    отсутствие ответа не должно останавливать доставку.
+    """
+    urls = (
+        f"{GEOSERVER_URL}/rest/workspaces/{GEOSERVER_WORKSPACE}/featuretypes/{store_name}.json",
+        f"{GEOSERVER_URL}/rest/workspaces/{GEOSERVER_WORKSPACE}/coveragestores/{store_name}/coverages/{store_name}.json",
+    )
+    bbox_lonlat = None
+    for url in urls:
+        try:
+            resp = requests.get(url, auth=auth, timeout=15)
+        except requests.RequestException:
+            continue
+        if resp.status_code != 200:
+            continue
+        try:
+            data = resp.json()
+        except ValueError:
+            continue
+        node = data.get("featureType") or data.get("coverage")
+        nbb = (node or {}).get("nativeBoundingBox")
+        if not nbb or nbb.get("crs") != "EPSG:4326":
+            continue
+        bbox_lonlat = [nbb["minx"], nbb["miny"], nbb["maxx"], nbb["maxy"]]
+        break
+    if bbox_lonlat is None:
+        return None
+
+    bbox_3857 = bbox_lonlat_to_3857(bbox_lonlat)
+    total = 0
+    for z in range(GWC_SEED_ZOOM_START, GWC_SEED_ZOOM_STOP + 1):
+        tx_min, tx_max, ty_min, ty_max = tile_range_for_bbox_3857(bbox_3857, z)
+        total += (tx_max - tx_min + 1) * (ty_max - ty_min + 1)
+    return total
+
+
+def _annotate_seed_shortfall(store_name: str, auth: tuple, result: dict) -> dict:
+    """Дописывает в результат засева сверку факт/расчёт (round44, блок
+    B). Недобор сверх порога — предупреждение В статус-файле с обеими
+    цифрами, доставку НЕ роняет (прогрев — оптимизация, не условие
+    работоспособности)."""
+    expected = _expected_gwc_tile_count(store_name, auth)
+    if not expected:
+        return result
+    actual = result.get("files") or 0
+    result["expected_tiles"] = expected
+    shortfall = expected - actual
+    shortfall_pct = (shortfall / expected) * 100
+    if shortfall > GWC_SEED_SHORTFALL_WARN_MIN_TILES and shortfall_pct > GWC_SEED_SHORTFALL_WARN_PCT:
+        msg = (
+            f"недобор засева: {actual}/{expected} файлов на диске "
+            f"({shortfall_pct:.1f}% меньше расчёта tile_math для "
+            f"z{GWC_SEED_ZOOM_START}-{GWC_SEED_ZOOM_STOP})"
+        )
+        logger.warning(f"  [{store_name}] {msg}")
+        result["shortfall_warning"] = msg
+    return result
+
 
 def _seed_gwc_layer(store_name: str, auth: tuple) -> dict:
     """Засевает тайловый кэш GWC для одного слоя (round35, блок C2).
@@ -1194,7 +1277,10 @@ def _seed_gwc_layer(store_name: str, auth: tuple) -> dict:
                 f"без роста {stable_polls * GWC_SEED_POLL_INTERVAL_S}с) — "
                 f"засев считается завершённым за {elapsed:.1f}с"
             )
-            return {"ok": True, "layer": store_name, "seconds": round(elapsed, 1), "files": file_count}
+            return _annotate_seed_shortfall(
+                store_name, auth,
+                {"ok": True, "layer": store_name, "seconds": round(elapsed, 1), "files": file_count},
+            )
 
         try:
             status_resp = requests.get(seed_url, auth=auth, timeout=15)
@@ -1228,7 +1314,10 @@ def _seed_gwc_layer(store_name: str, auth: tuple) -> dict:
                     f"{last_done}/{last_total} ({ratio:.0%})"
                 )
             logger.info(f"  [{store_name}] засев GWC завершён за {elapsed:.1f}с (по статусу GWC)")
-            return {"ok": True, "layer": store_name, "seconds": round(elapsed, 1), "files": file_count}
+            return _annotate_seed_shortfall(
+                store_name, auth,
+                {"ok": True, "layer": store_name, "seconds": round(elapsed, 1), "files": file_count},
+            )
         # round36, блок A/D: КАЖДАЯ строка long-array-array — это один
         # ПОТОК той же самой задачи и репортит ОДИНАКОВОЕ полное значение
         # tilesTotal (не свою долю) — GWCTask.getTilesTotal() общий на
@@ -1247,7 +1336,10 @@ def _seed_gwc_layer(store_name: str, auth: tuple) -> dict:
 
     elapsed = time.monotonic() - t0
     logger.warning(f"  [{store_name}] засев GWC не завершился за {GWC_SEED_MAX_WAIT_S}с — оставлен фоном, доставка продолжается")
-    return {"ok": False, "layer": store_name, "error": f"не завершился за {GWC_SEED_MAX_WAIT_S}с (оставлен фоном)", "seconds": round(elapsed, 1), "files": last_file_count}
+    return _annotate_seed_shortfall(
+        store_name, auth,
+        {"ok": False, "layer": store_name, "error": f"не завершился за {GWC_SEED_MAX_WAIT_S}с (оставлен фоном)", "seconds": round(elapsed, 1), "files": last_file_count},
+    )
 
 
 def seed_gwc_cache(auth: tuple) -> dict:
