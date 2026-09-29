@@ -54,6 +54,13 @@ export async function getBboxByUser(cqlFilter, year) {
   if (!m) throw new Error('BBox parse error')
   const [minx, miny] = m[1].split(' ').map(Number)
   const [maxx, maxy] = m[2].split(' ').map(Number)
+  // round50, блок B: на пустую выборку vec:Bounds отдаёт вырожденный
+  // (инвертированный) охват вместо ошибки — HTTP 200, но maxx<minx/
+  // maxy<miny (подтверждено фактом, round49: LowerCorner(0,0)-
+  // UpperCorner(-1,-1)). Раньше это ушло бы в fitBounds() как есть —
+  // карта уехала бы в Гвинейский залив. null — сигнал "нет данных",
+  // не трогать текущий охват карты (см. App.jsx).
+  if (maxx < minx || maxy < miny) return null
   return { minx, miny, maxx, maxy }
 }
 

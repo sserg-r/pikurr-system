@@ -123,7 +123,17 @@ def main():
     else:
         with open(getstats_path, encoding='utf-8') as fh:
             frontend_tpl = fh.read()
-        frontend_xml = frontend_tpl.replace('{{CQL_FILTER}}', '2212000055')
+        # round50, блок A: шаблон витрины параметризован typeName/фильтром
+        # (не {{CQL_FILTER}} — тот способ убран блоком B этого раунда).
+        # "последние данные" (year=None) — тот же выбор, что был сделан
+        # выше через реальную Qt-навигацию (fields_latest, без условия года).
+        frontend_group_filter = (
+            '<ogc:PropertyIsLike wildCard="*" singleChar="." escape="!">'
+            '<ogc:PropertyName>nr_user</ogc:PropertyName>'
+            '<ogc:Literal>2212000055*</ogc:Literal></ogc:PropertyIsLike>')
+        frontend_xml = (frontend_tpl
+                         .replace('{{TYPENAME}}', 'pikurr:fields_latest')
+                         .replace('{{FILTER}}', f'<ogc:Filter>{frontend_group_filter}</ogc:Filter>'))
         try:
             frontend_stats = geoserver_client.wps_execute_json(
                 geoserver_client.DEFAULT_GEOSERVER_URL, frontend_xml)
@@ -257,6 +267,34 @@ def main():
            crs_before == crs_after, f'{crs_before} -> {crs_after}')
     panel.aiCheckBox.click()
     QP.instance().removeMapLayer(dummy.id())
+
+    # ---- round50, блок B.2: год без данных — таблица пуста, карта не
+    # сдвинута, без исключений. 2024 год реально не существует на проде
+    # (единственный — 2025), yearCombo его не предлагает сам — добавляем
+    # пункт вручную, чтобы протестировать путь кода, не дожидаясь
+    # появления второго года на проде.
+    select_by_arrow(panel.userCombo, '2212000055')
+    QTest.keyClick(panel.userCombo, Qt.Key_Return)
+    extent_before = iface.mapCanvas().extent()
+    panel.yearCombo.addItem('2024 (тест, реально не существует)', 2024)
+    year_2024_idx = panel.yearCombo.count() - 1
+    try:
+        select_by_arrow(panel.yearCombo, 2024)
+        QTest.keyClick(panel.yearCombo, Qt.Key_Return)
+        stats_rows_2024 = table_rows(panel)
+        extent_after = iface.mapCanvas().extent()
+        record('B2. Год без данных (2024): таблица пуста, карта не сдвинута, без исключений',
+               stats_rows_2024 == [] and extent_after == extent_before,
+               f'строк_таблицы={len(stats_rows_2024)}, '
+               f'охват_совпадает={extent_after == extent_before}')
+    except Exception as e:
+        record('B2. Год без данных (2024): таблица пуста, карта не сдвинута, без исключений',
+               False, f'исключение: {e}')
+    finally:
+        # вернуть к "последние данные" для остальных шагов
+        panel.yearCombo.removeItem(year_2024_idx)
+        select_by_arrow(panel.yearCombo, None)
+        QTest.keyClick(panel.yearCombo, Qt.Key_Return)
 
     # ---- A3: поиск в списке по подстроке и коду (реальный ввод, не setText) ----
     combo = panel.userCombo

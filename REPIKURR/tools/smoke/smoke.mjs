@@ -87,6 +87,21 @@ async function main() {
     }
   })
 
+  // round50, блок A5: тело POST-запросов к WPS (статистика/границы) —
+  // проверка, что при выбранном годе typeName/условие года реально
+  // уходят на сервер, не только что запрос "не упал".
+  const wpsRequestBodies = []
+  page.on('request', req => {
+    if (req.method() === 'POST' && req.url().includes('/geoserver/wps')) {
+      wpsRequestBodies.push(req.postData() || '')
+    }
+  })
+  function freshWpsBodies() {
+    const snapshot = [...wpsRequestBodies]
+    wpsRequestBodies.length = 0
+    return snapshot
+  }
+
   function freshConsoleErrors() {
     const snapshot = [...consoleErrors]
     consoleErrors.length = 0
@@ -110,6 +125,7 @@ async function main() {
 
   // ---- 2. Выбор года ------------------------------------------------
   const yearSelectVisible = await page.locator('.sidebar-section:has-text("Год оценки") select').count() > 0
+  let yearWasSelected = false
   if (yearSelectVisible) {
     const yearSelect = page.locator('.sidebar-section:has-text("Год оценки") select')
     const options = await yearSelect.locator('option').allTextContents()
@@ -124,11 +140,44 @@ async function main() {
         errs.length === 0,
         `год="${targetYear}" запросов_к_fields=${fieldsReqs.length} консоль_ошибок=${errs.length}`
       )
+      yearWasSelected = true
     } else {
       record('2. Выбор года', true, 'только один год доступен — селектор не показан, пропущено осознанно')
     }
   } else {
     record('2. Выбор года', true, 'селектор года не отрисован (доступен только один год) — не ошибка')
+  }
+
+  // ---- 2b. Год учтён в теле запроса статистики (round50, блок A5) -----
+  // Зелёный этот шаг только когда доступен второй год (после доставки
+  // с новыми данными) — до этого условие "targetYear" выше не выполнится
+  // и шаг честно помечается как пропущенный, не как красный/зелёный
+  // наугад.
+  freshWpsBodies()
+  if (yearWasSelected) {
+    // сделать выбор области/района, чтобы реально ушёл WPS-запрос
+    // статистики (сам по себе выбор года его не шлёт — см. round50, A3)
+    const oblastSelect2b = page.locator('.sidebar-section:has-text("Область") select')
+    const oblastOptions2b = await oblastSelect2b.locator('option').allTextContents()
+    const targetOblast2b = oblastOptions2b.find(o => o !== 'Все области')
+    if (targetOblast2b) {
+      await oblastSelect2b.selectOption({ label: targetOblast2b })
+      await page.waitForTimeout(1500)
+    }
+    const bodies = freshWpsBodies()
+    const statsBody = bodies.find(b => b.includes('vec:Aggregate'))
+    const hasTypeName = statsBody?.includes('typeName="pikurr:fields"')
+    const hasYear = statsBody && /<ogc:PropertyName>year<\/ogc:PropertyName>/.test(statsBody)
+    record(
+      '2b. Год учтён в теле запроса статистики (typeName=fields + условие year)',
+      Boolean(hasTypeName && hasYear),
+      statsBody
+        ? `typeName_fields=${hasTypeName} year_в_фильтре=${hasYear}`
+        : 'запрос статистики не перехвачен (область не выбралась?)'
+    )
+  } else {
+    record('2b. Год учтён в теле запроса статистики', true,
+           'пропущено — доступен только один год, второй появится после доставки с новыми данными')
   }
 
   // ---- 3. Выбор района ------------------------------------------------

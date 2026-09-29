@@ -472,6 +472,16 @@ class pikurr:
             self._message(f'vec:Bounds вернул неожиданную СК ({crs}) — '
                            f'зум может быть неточным', error=False)
 
+        # round50, блок B: на пустую выборку (например, год без данных)
+        # vec:Bounds отдаёт вырожденный охват — верхний угол меньше
+        # нижнего (проверено фактом, round49: (0,0)-(-1,-1)) — не зум,
+        # а сигнал "нет данных". QgsRectangle с такими координатами не
+        # гарантированно останется "пустым" (может нормализоваться), не
+        # трогаем карту вовсе в этом случае.
+        if upper[0] < lower[0] or upper[1] < lower[1]:
+            self._message('Нет данных за выбранный год/выбор — карта не сдвинута')
+            return
+
         bbox = QgsRectangle(lower[0], lower[1], upper[0], upper[1])
         source_crs = QgsCoordinateReferenceSystem('EPSG:4326')
         dest_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
@@ -502,6 +512,10 @@ class pikurr:
         count_idx = funcs.index('Count') + 1 if 'Count' in funcs else 1
         sum_idx = funcs.index('Sum') + 1 if 'Sum' in funcs else 2
         rows = [(r[0], r[count_idx], r[sum_idx]) for r in jsstat['AggregationResults']]
+        if not rows:
+            # round50, блок B.2: год/выбор без данных — пустая таблица
+            # уже была (не исключение), явно называем причину.
+            self._message('Нет данных за выбранный год/выбор')
         self._fill_stats_table(rows)
 
     def _fill_stats_table(self, rows):

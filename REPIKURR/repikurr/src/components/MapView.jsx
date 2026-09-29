@@ -1,6 +1,7 @@
 import 'leaflet/dist/leaflet.css'
 import { MapContainer, TileLayer, WMSTileLayer, ZoomControl, AttributionControl, Popup, useMap, useMapEvents } from 'react-leaflet'
 import { WMS_BASE_URL, WMS_GWC_BASE_URL, GWC_CACHED_LAYERS, DIMMED_OPACITY } from '../constants'
+import { fieldsTypeName } from '../services/fieldsQuery'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './MapView.css'
 
@@ -204,7 +205,9 @@ export default function MapView({ baseLayer, bbox, cqlExpr, highlightCqlExpr, sh
   const cacheBuster   = dataVersion || null
   const [clickCoords, setClickCoords] = useState(null)
 
-  const vectorLayer = selectedYear ? 'pikurr:fields' : 'pikurr:fields_latest'
+  // round50, блок A: та же логика, что App.jsx::vectorTypeName и
+  // geoserver.js — единая точка (fieldsQuery.js), не отдельная копия.
+  const vectorLayer = fieldsTypeName(selectedYear)
   const effectiveYear = selectedYear ?? maxYear
   const rasterLayer = (!effectiveYear || effectiveYear === maxYear)
     ? 'image_assessment'

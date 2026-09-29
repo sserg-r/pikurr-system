@@ -38,23 +38,6 @@ function App() {
   // сломано что-то или так и должно быть. Явный баннер + повтор.
   const [yearDistrictError, setYearDistrictError] = useState(false)
 
-  async function handleZoomTo(nrUser) {
-    try {
-      const b = await getBboxByUser(nrUser)
-      setBbox(b)
-    } catch (e) {
-      console.error(e)
-    }
-  }
-
-  async function handleFetchStats(nrUser) {
-    try {
-      const data = await getStatsByUser(nrUser)
-      setStats(data)
-    } catch (e) {
-      console.error(e)
-    }
-  }
   async function loadUsers() {
     try {
       const fc = await getAllUsers()
@@ -142,9 +125,15 @@ function App() {
     setSelectedUser('')
     try {
       if (oblastId) {
-        const b = await getBboxByUser(oblastId)
-        setBbox(b)
-        const data = await getStatsByUser(oblastId)
+        // round50, блок A2: год передаётся так же, как в handleSelectUser
+        // (round49 добавил его туда, но не сюда) — иначе выбор области
+        // при выбранном годе показывал "последние данные" вместо года.
+        const b = await getBboxByUser(oblastId, selectedYear)
+        // round50, блок B: null — "нет данных за этот год" (вырожденный
+        // bbox от vec:Bounds на пустой выборке) — не двигаем карту,
+        // баннер "нет данных" показывает groupEmpty (round37) независимо.
+        if (b) setBbox(b)
+        const data = await getStatsByUser(oblastId, selectedYear)
         setStats(data)
       } else {
         setBbox(null)
@@ -172,7 +161,8 @@ function App() {
         // (fieldsTypeName/vectorTypeName ниже) — раньше границы всегда
         // считались по pikurr:fields без условия года.
         const b = await getBboxByUser(zoomCode, selectedYear)
-        setBbox(b)
+        // round50, блок B: null — нет данных за год, не двигаем карту.
+        if (b) setBbox(b)
       } else {
         setBbox(null)
       }
@@ -188,6 +178,40 @@ function App() {
       }
     } catch (e) { console.error(e) }
   }
+
+  // round50, блок A3: смена года при уже выбранной группе НЕ пересчитывала
+  // bbox/stats — они обновлялись только явным выбором района/области/
+  // землепользователя (handleSelectUser/handleSelectOblast выше), год сам
+  // по себе таким триггером не был (Sidebar вызывает голый setSelectedYear).
+  // Проверено фактом (round50): смена года в такой ситуации оставляла
+  // старые числа/охват от предыдущего года. Реагирует ТОЛЬКО на смену
+  // года (не на selectedUser/selectedDistrict/selectedOblast — иначе
+  // задвоил бы вызовы, которые уже делают handleSelectUser/handleSelectOblast).
+  useEffect(() => {
+    const effectiveCode = selectedUser === '*' ? (selectedDistrict || '') : selectedUser
+    const zoomCode = effectiveCode || selectedDistrict || selectedOblast
+    const statsCode = effectiveCode || selectedOblast
+    if (!zoomCode && !statsCode) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        if (zoomCode) {
+          const b = await getBboxByUser(zoomCode, selectedYear)
+          // round50, блок B: null — нет данных за год, не двигаем карту.
+          if (!cancelled && b) setBbox(b)
+        }
+      } catch (e) { console.error(e) }
+      try {
+        if (statsCode) {
+          const data = await getStatsByUser(statsCode, selectedYear)
+          if (!cancelled) setStats(data)
+        }
+      } catch (e) { console.error(e) }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedYear])
+
   // round37, блок A2.1/A2.2: разделены год (фильтр фонового слоя — не
   // меняется при выборе группы, сохраняет попадания GWC) и группа
   // (область/район/землепользователь — фильтр верхнего слоя-подсветки,
