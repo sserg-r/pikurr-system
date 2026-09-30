@@ -66,6 +66,19 @@ def _png_has_nonempty_colors(body: bytes) -> tuple[bool, str]:
     аномально мал по сравнению с обычным тайлом)."""
     if body[:8] != b"\x89PNG\r\n\x1a\n":
         return False, "не PNG-сигнатура"
+    # Разбор чанков (длина 4 Б, тип 4 Б, данные, CRC 4 Б): нужен хотя бы один
+    # непустой IDAT — иначе изображения в файле нет.
+    pos, idat_bytes = 8, 0
+    while pos + 8 <= len(body):
+        length = struct.unpack(">I", body[pos:pos + 4])[0]
+        ctype = body[pos + 4:pos + 8]
+        if ctype == b"IDAT":
+            idat_bytes += length
+        if ctype == b"IEND":
+            break
+        pos += 12 + length
+    if idat_bytes == 0:
+        return False, "в PNG нет непустого чанка IDAT"
     if len(body) < 200:
         # Валидный, но подозрительно маленький PNG — почти наверняка
         # однотонная (пустая) заливка, не реальная классификация.
@@ -478,6 +491,7 @@ def run_healthcheck(base_url: str) -> dict:
     check_error_path(base_url, checks)
     check_main_page(base_url, checks)
     static_data = check_year_district(base_url, checks)
+    check_districts_ref(base_url, checks)
     check_db_matches_static(static_data, checks)
     check_disk_space(checks)
 

@@ -47,7 +47,7 @@
 | **Доставка (`deliver.py`)** | Приём пакета, проверка (версия схемы, состав лет), `pg_dump`-бэкап, импорт в `_stage`, атомарная подмена в боевые таблицы, `REFRESH` представлений, обновление GeoServer-сторов, инвалидация/прогрев GWC-кэша | `REPIKURR/deliver.py`, вызывается `watchdog.py` на VPS (и на стенде для тестов) | Schema version 3 |
 | **Вотчдог (`watchdog.py`)** | Мониторинг `inbox/` на предмет новых пакетов, защита от гонки записи (`_is_stable`), запуск `deliver.py`, самостоятельное обнаружение "зависших" пакетов при своём перезапуске | `REPIKURR/watchdog.py`, `pikurr-watchdog.service` (systemd) на VPS и на стенде | round38/39 |
 | **Витрина (фронтенд)** | React SPA (Leaflet), выбор года/района, подсветка группы (область/район/землепользователь), слой AI-оценки, попапы с атрибутами | `REPIKURR/repikurr/`, образ `repikurr-react:latest`, контейнер `pikurr_vps_react` | React + Leaflet |
-| **GeoServer** | WMS/WFS/GWC — источник тайлов и векторных данных для фронтенда | `kartoza/geoserver:2.24.2`, контейнер `pikurr_vps_geoserver`, данные — `geoserver_data/` (bind mount) | 2.24.2, GWC 1.23.0 (внутренний) |
+| **GeoServer** | WMS/WFS/GWC — источник тайлов и векторных данных для фронтенда | `kartoza/geoserver:2.24.2`, контейнер `pikurr_vps_geoserver`, данные — `geoserver_data/` (bind mount) | 2.24.2, GWC 1.24.2 (`gwc-core-1.24.2.jar` внутри образа GeoServer) |
 | **PostGIS** | Хранение боевых векторных данных и материализованных представлений | `postgis/postgis:15-3.3`, контейнер `pikurr_vps_postgis` | PostgreSQL 15 / PostGIS 3.3 |
 | **Caddy** | TLS-терминация, реверс-прокси на GeoServer/React, basic auth | `caddy:2-alpine`, контейнер `pikurr_vps_caddy` | 2-alpine |
 | **Автозапуск ВМ** | Yandex Cloud Function + таймерный триггер — запускает ВМ, если она `STOPPED` (прерываемая ВМ, принудительный останов раз в ≤24ч) | `REPIKURR/cloud-function-autostart/` (`main.py`, `README.md`); в облаке — функция `pikurr-autostart`, триггер `pikurr-autostart-timer` | Развёрнуто и проверено фактом round42, блок C |
@@ -115,8 +115,8 @@ docker exec pikurr-system-etl-1 python3 -c "from src.tasks.package import Packag
 5. **Обязательно** дождаться `ok: true` и зелёного встроенного healthcheck, приложить манифест и содержимое к отчёту при первом развёртывании из нового источника.
 
 ### 5.3. Проверка
-- `REPIKURR/healthcheck.py --base-url <домен> --json` — 9 проверок по содержимому (не только код ответа).
-- `REPIKURR/tools/smoke/smoke.mjs` (Playwright) — 13 шагов реального пользовательского сценария в браузере, обязателен после любой выкатки фронтенда.
+- `REPIKURR/healthcheck.py --base-url <домен> --json` — 11 проверок по содержимому (при двух кэшируемых слоях) (не только код ответа).
+- `REPIKURR/tools/smoke/smoke.mjs` (Playwright) — 23 проверки реального пользовательского сценария (число растёт с правками сценария) в браузере, обязателен после любой выкатки фронтенда.
 - `REPIKURR/tools/verify_tiles_have_data.py` — доля пустых тайлов по контрольному набору.
 
 ### 5.4. Обслуживание (смена конфигурации ВМ, плановые работы)

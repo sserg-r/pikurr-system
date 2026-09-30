@@ -91,12 +91,33 @@ for repo_rel in "${!SUPPORT_FILES[@]}"; do
     fi
 done
 
+# Конфигурационные файлы стека — ТОЛЬКО сверка (round52, A1): compose-файл
+# и Caddyfile правятся вручную на сервере и раньше расходились с репозиторием
+# незаметно. Скрипт их не записывает ни при --check, ни при --apply.
+CONFIG_FILES=(docker-compose.vps.yml Caddyfile)
+config_drift=0
+log "=== Сверка конфигурации стека (только чтение) ==="
+for f in "${CONFIG_FILES[@]}"; do
+    local_sha="$(sha256sum "$SCRIPT_DIR/$f" | cut -d' ' -f1)"
+    remote_sha="$(ssh "$VPS_HOST" "sha256sum $VPS_REMOTE_DIR/$f 2>/dev/null | cut -d' ' -f1" || true)"
+    if [[ -z "$remote_sha" ]]; then
+        log "  РАСХОЖДЕНИЕ (не синхронизируется скриптом): $f — на VPS отсутствует"
+        config_drift=1
+    elif [[ "$local_sha" != "$remote_sha" ]]; then
+        log "  РАСХОЖДЕНИЕ (не синхронизируется скриптом): $f — репозиторий=$local_sha VPS=$remote_sha"
+        config_drift=1
+    else
+        log "  OK: $f — совпадает ($local_sha)"
+    fi
+done
+
 if [[ "$MODE" == "--check" ]]; then
-    if [[ "$drift_found" -eq 0 ]]; then
+    if [[ "$drift_found" -eq 0 && "$config_drift" -eq 0 ]]; then
         log "=== Расхождений не найдено ==="
         exit 0
     else
-        log "=== Есть расхождения — для синхронизации: $0 --apply ==="
+        [[ "$drift_found" -ne 0 ]] && log "=== Есть расхождения в скриптах — для синхронизации: $0 --apply ==="
+        [[ "$config_drift" -ne 0 ]] && log "=== Есть расхождения в конфигурации стека — выровнять вручную (скрипт их не записывает) ==="
         exit 1
     fi
 fi
