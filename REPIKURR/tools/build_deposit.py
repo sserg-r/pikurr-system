@@ -62,6 +62,7 @@ EXCLUDE_PREFIXES = (
     "REPIKURR/tools/round37_",        # разовые диагностические сценарии
     "REPIKURR/tools/smoke/round50_",  # разовые диагностические сценарии
     "PIKURR/src/services/_archive/",  # путь отката на прежний способ инференса
+    "REPIKURR/nginx.conf",            # вариант для стенда/разработки, в контур публикации не входит
     "REPIKURR/repikurr/.env",  # локальная настройка разработки (единственная переменная, пустая)
 )
 
