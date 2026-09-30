@@ -28,7 +28,9 @@ services:
     image: postgis/postgis:15-3.3
     container_name: pikurr_vps_postgis
     restart: unless-stopped
-    mem_limit: 1536m
+    # round41, блок E: финальное решение пользователя — 4 ГБ (таблица A5
+    # round40), откат — см. docker-compose.vps.yml.bak_pre_round41_final4gb_*
+    mem_limit: 1024m
     environment:
       POSTGRES_DB: pikurr
       POSTGRES_USER: pikurr
@@ -36,7 +38,8 @@ services:
     # shared_buffers/work_mem — не по умолчанию (задача 3): дефолт PostgreSQL
     # (128MB shared_buffers) занижен для этой нагрузки, но полный автотюн под
     # весь доступный RAM отдал бы память, нужную GeoServer.
-    command: postgres -c shared_buffers=512MB -c work_mem=32MB -c max_connections=50 -c effective_cache_size=1GB
+    # round41, блок E: shared_buffers 512MB→256MB (финал — 4 ГБ, таблица A5).
+    command: postgres -c shared_buffers=256MB -c work_mem=32MB -c max_connections=50 -c effective_cache_size=1GB
     volumes:
       - pgdata_vps:/var/lib/postgresql/data
     ports:
@@ -46,7 +49,9 @@ services:
     image: kartoza/geoserver:2.24.2
     container_name: pikurr_vps_geoserver
     restart: unless-stopped
-    mem_limit: 3g
+    # round41, блок E: финальное решение пользователя — 4 ГБ (таблица A5
+    # round40), откат — docker-compose.vps.yml.bak_pre_round41_final4gb_*
+    mem_limit: 2048m
     environment:
       - GEOSERVER_ADMIN_USER=admin
       - GEOSERVER_ADMIN_PASSWORD=${GEOSERVER_ADMIN_PASSWORD:?Задайте GEOSERVER_ADMIN_PASSWORD в .env}
@@ -55,8 +60,9 @@ services:
       # сверху (обычно 300-500MB) + буфер под нативные операции чтения растров
       # (imageio native cache для мозаики — растёт с числом одновременных
       # WMS-запросов).
-      - INITIAL_MEMORY=512M
-      - MAXIMUM_MEMORY=2048M
+      # round41, блок E: 2048M→1024M (финал — 4 ГБ, таблица A5).
+      - INITIAL_MEMORY=256M
+      - MAXIMUM_MEMORY=1024M
       # round27, B2: журнал сборки мусора JVM — только диагностика, не
       # меняет поведение GC (без этого нельзя отличить паузу JVM от
       # отобранного гипервизором процессорного времени, round26 B3).
@@ -102,10 +108,6 @@ services:
       # останется без сертификата на неделю.
       - caddy_data:/data
       - caddy_config:/config
-      # round29, блок D3: bind mount для персистентности журнала доступа
-      # (без него access.log живёт только в слое контейнера и теряется
-      # при docker compose up -d / пересоздании — как и caddy_data выше,
-      # но для лога, не сертификатов).
       - ./caddy_logs:/var/log/caddy
       # round23, задача 1: список годов/районов, который deliver.py пишет
       # после каждой доставки (~/repikurr/static/ на хосте, вне docker) —

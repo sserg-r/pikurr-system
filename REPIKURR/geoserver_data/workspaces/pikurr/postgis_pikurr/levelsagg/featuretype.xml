@@ -35,7 +35,7 @@
 usname, &#xd;
 usern_co, &#xd;
 left(usern_co,4) rn&#xd;
-from agrifields
+from levelsagg_ready
 </sql>
         <escapeSql>false</escapeSql>
       </virtualTable>
