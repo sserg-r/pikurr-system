@@ -199,7 +199,7 @@ FROM (
                  THEN ST_Multi(ST_Union(geom))
                  ELSE ST_Multi((array_agg(geom ORDER BY ogc_fid))[1])
             END)::geometry(MultiPolygon,4326)           AS geom,
-           (array_agg(ball_co  ORDER BY ogc_fid))[1]    AS ball_co,
+           ((array_agg(ball_co  ORDER BY ogc_fid))[1])::numeric(24,15) AS ball_co,
            (array_agg(ndohod_d ORDER BY ogc_fid))[1]    AS ndohod_d
     FROM   agrifields
     GROUP  BY nr_user
