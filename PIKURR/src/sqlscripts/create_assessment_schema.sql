@@ -12,7 +12,11 @@
 -- by Filter: 51181 из 55784), 236-293мс на тайл против 20.9-21.6мс у
 -- assessment_ready (GIST-индекс). Найдено фактом в round30, блок A —
 -- см. docs/round30-latest-view.md.
--- SCHEMA_VERSION = 3
+-- round57, D4: assessment_ready строится по участку целиком (код nr_user
+-- с несколькими полигонами — один кадастровый участок, разбитый на части):
+-- геометрия — объединение частей, а не произвольная строка DISTINCT ON;
+-- area_ha — по объединению. Менялся SELECT assessment_ready -> версия 4.
+-- SCHEMA_VERSION = 4
 
 -- round28, блок E: CREATE TABLE ниже для agrifields/razgrafka/assessment
 -- приведены к тому, что реально создаёт `ogr2ogr` из GPKG пакета (не
@@ -125,7 +129,7 @@ BEGIN
 END $$;
 
 -- assessment_ready: все годы.
--- agrifields дедуплицируется через DISTINCT ON (nr_user).
+-- agrifields сводится к одной строке на nr_user (round57, D4: объединение частей).
 --
 -- valuation / bzdz — логика:
 --   frac — доля древесно-кустарниковой растительности на участке
@@ -185,9 +189,20 @@ SELECT
         ELSE                                         'meadow'
     END                                                        AS valuation
 FROM (
-    SELECT DISTINCT ON (nr_user) *
+    -- round57, D4: участок = все части с одним nr_user. Часть одна — её геометрия
+    -- как есть (без пересборки); частей несколько — ST_Union. Атрибуты общие у
+    -- частей (проверено: ball_co/ndohod_d совпадают у всех многочастных кодов).
+    -- Тип геометрии приводится к geometry(MultiPolygon,4326), как у agrifields —
+    -- набор и типы столбцов представления не меняются (слои GeoServer).
+    SELECT nr_user,
+           (CASE WHEN count(*) > 1
+                 THEN ST_Multi(ST_Union(geom))
+                 ELSE ST_Multi((array_agg(geom ORDER BY ogc_fid))[1])
+            END)::geometry(MultiPolygon,4326)           AS geom,
+           (array_agg(ball_co  ORDER BY ogc_fid))[1]    AS ball_co,
+           (array_agg(ndohod_d ORDER BY ogc_fid))[1]    AS ndohod_d
     FROM   agrifields
-    ORDER  BY nr_user
+    GROUP  BY nr_user
 ) a
 JOIN assessment b ON a.nr_user::bigint = b.fid_ext
 -- Доля пикселей "лес+кустарник+закустаренный" (классы 0,1,2).
@@ -282,6 +297,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_levelsagg_ready_all
 
 -- round27/30, A2: маркер версии схемы материализованных объектов —
 -- см. пояснение и SCHEMA_VERSION в начале файла.
-COMMENT ON MATERIALIZED VIEW assessment_ready IS 'schema_version=3';
-COMMENT ON MATERIALIZED VIEW levelsagg_ready IS 'schema_version=3';
-COMMENT ON MATERIALIZED VIEW assessment_ready_latest IS 'schema_version=3';
+COMMENT ON MATERIALIZED VIEW assessment_ready IS 'schema_version=4';
+COMMENT ON MATERIALIZED VIEW levelsagg_ready IS 'schema_version=4';
+COMMENT ON MATERIALIZED VIEW assessment_ready_latest IS 'schema_version=4';

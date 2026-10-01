@@ -780,7 +780,7 @@ def _check_year_composition(manifest_years: list[int], *, allow_year_change: boo
 # round27, A2: версия схемы объектов assessment_ready/levelsagg_ready,
 # должна совпадать со SCHEMA_VERSION в create_assessment_schema.sql
 # (COMMENT ON MATERIALIZED VIEW ... IS 'schema_version=N').
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _VERSIONED_MATERIALIZED_VIEWS = ("assessment_ready", "levelsagg_ready", "assessment_ready_latest")
 
 

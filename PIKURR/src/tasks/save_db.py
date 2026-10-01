@@ -42,15 +42,32 @@ class SaveStatsTask:
         return {row['n10000']: wkb.loads(bytes(row['geom_wkb'])) for _, row in df.iterrows()}
 
     def get_fields(self) -> pd.DataFrame:
-        """Получает список полей с геометриями и фреймами"""
+        """Получает список участков с геометриями и фреймами (листами).
+
+        round57, D4: код nr_user с несколькими полигонами — один кадастровый
+        участок, разбитый на части: геометрия — объединение частей
+        (ST_Union, ST_Multi), листы — все, пересекающие объединённую геометрию,
+        одна строка на nr_user. Раньше каждый полигон шёл отдельной строкой, и
+        в assessment оставался результат только последней обработанной части.
+        Участок из одной части не пересобирается (берётся его геометрия как есть).
+        Листы упорядочены по имени (round57, D2)."""
         query = f"""
+        WITH u AS (
+            SELECT nr_user,
+                   CASE WHEN count(*) > 1
+                        THEN ST_Multi(ST_Union(geom))
+                        ELSE ST_Multi((array_agg(geom))[1])
+                   END AS geom
+            FROM {self.afields}
+            GROUP BY nr_user
+        )
         SELECT
-            {self.afields}.nr_user,
-            ST_AsGeoJSON({self.afields}.geom) as geom_json,
+            u.nr_user,
+            ST_AsGeoJSON(u.geom) as geom_json,
             array_agg({self.razgr}.n10000 ORDER BY {self.razgr}.n10000) as frames
-        FROM {self.afields}
-        JOIN {self.razgr} ON ST_intersects({self.afields}.geom, {self.razgr}.geom)
-        GROUP BY {self.afields}.nr_user, {self.afields}.geom
+        FROM u
+        JOIN {self.razgr} ON ST_intersects(u.geom, {self.razgr}.geom)
+        GROUP BY u.nr_user, u.geom
         """
         return self.db.execute_query(query)
 
