@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
+from shapely import wkb
 from shapely.geometry import shape
 
 import datetime
@@ -28,9 +29,17 @@ class SaveStatsTask:
         self.razgr = settings.dbtables.razgr
         self.final_dir = settings.paths.predictions_final
         self.progress: ProgressReporter | None = None
+        self.sheet_polygons: dict = {}
 
     def get_target_year(self) -> int:
         return get_target_year()
+
+    def get_sheet_polygons(self) -> dict:
+        """Полигоны листов (razgrafka) для маскирования растра листа его полигоном."""
+        df = self.db.execute_query(
+            f"SELECT n10000, ST_AsBinary(geom) AS geom_wkb FROM {self.razgr}"
+        )
+        return {row['n10000']: wkb.loads(bytes(row['geom_wkb'])) for _, row in df.iterrows()}
 
     def get_fields(self) -> pd.DataFrame:
         """Получает список полей с геометриями и фреймами"""
@@ -38,7 +47,7 @@ class SaveStatsTask:
         SELECT
             {self.afields}.nr_user,
             ST_AsGeoJSON({self.afields}.geom) as geom_json,
-            array_agg({self.razgr}.n10000) as frames
+            array_agg({self.razgr}.n10000 ORDER BY {self.razgr}.n10000) as frames
         FROM {self.afields}
         JOIN {self.razgr} ON ST_intersects({self.afields}.geom, {self.razgr}.geom)
         GROUP BY {self.afields}.nr_user, {self.afields}.geom
@@ -75,17 +84,19 @@ class SaveStatsTask:
 
         year_dir = self.final_dir / str(year)
         tiff_paths = []
+        polygons = []
         for frame in frames:
             tiff_path = year_dir / f"{frame}.tif"
             if tiff_path.exists():
                 tiff_paths.append(str(tiff_path))
+                polygons.append(self.sheet_polygons[frame])
 
         if not tiff_paths:
             return
 
         # --- ИЗМЕНЕНИЕ: Передаем СТРОКУ, а не объект ---
         # geom_json_str приходит из PostGIS как текст
-        stats = calculate_zonal_stats(geom_json_str, tiff_paths)
+        stats = calculate_zonal_stats(geom_json_str, tiff_paths, sheet_polygons=polygons)
         # stats = {'0': 0.1, '5': 0.9}
         # -----------------------------------------------
 
@@ -97,6 +108,7 @@ class SaveStatsTask:
     def run(self):
         year = self.get_target_year()
         fields_df = self.get_fields()
+        self.sheet_polygons = self.get_sheet_polygons()
         total_fields = len(fields_df)
 
         logger.info(f"Processing {len(fields_df)} fields for year {year}")

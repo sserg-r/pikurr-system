@@ -58,7 +58,58 @@ def sanitize_coords(coords):
         return [sanitize_coords(x) for x in coords]
     return coords
 
-def calculate_zonal_stats(geom_input, tiff_paths: list) -> dict:
+_MASK_WINDOW_MARGIN_PX = 32  # запас вокруг участка при маскировании листа его полигоном
+
+
+def _mask_sheets_by_polygons(srcs: list, sheet_polygons: list, geometry_dict: dict):
+    """round57, D2: «каждый лист — своим полигоном».
+
+    Возвращает (датасеты, memfiles): копии растров листов, где пиксели, центр
+    которых лежит вне полигона ЭТОГО листа (razgrafka), заменены на 255 (nodata).
+    Дальше `merge(..., nodata=255)` берёт в зоне перекрытия растров значение
+    из листа, в чей полигон попадает пиксель, а не из «чужой» полосы холста
+    соседа (холст листа — целые тайлы z17, до +255 пикс за полигоном).
+
+    Маскируется только окно вокруг участка (+_MASK_WINDOW_MARGIN_PX): значения
+    вне окна на результат не влияют (потом всё равно crop по участку), зато не
+    растеризуется весь холст (44 млн пикселей) на каждый участок. Растр читается
+    целиком, как и раньше; сетка `merge` не меняется.
+    """
+    from rasterio.features import geometry_mask
+    from rasterio.io import MemoryFile
+    from rasterio.windows import Window, from_bounds, transform as win_transform
+    from shapely.geometry import mapping, shape
+
+    gminx, gminy, gmaxx, gmaxy = shape(geometry_dict).bounds
+    datasets, memfiles = [], []
+    for src, poly in zip(srcs, sheet_polygons):
+        data = src.read(1)
+        h, w = data.shape
+        m = _MASK_WINDOW_MARGIN_PX
+        win = from_bounds(gminx, gminy, gmaxx, gmaxy, transform=src.transform)
+        c0 = max(int(win.col_off) - m, 0)
+        r0 = max(int(win.row_off) - m, 0)
+        c1 = min(int(win.col_off + win.width) + m + 1, w)
+        r1 = min(int(win.row_off + win.height) + m + 1, h)
+        if c1 > c0 and r1 > r0:
+            window = Window(c0, r0, c1 - c0, r1 - r0)
+            inside = geometry_mask(
+                [mapping(poly)], out_shape=(r1 - r0, c1 - c0),
+                transform=win_transform(window, src.transform), invert=True,
+            )
+            sub = data[r0:r1, c0:c1]
+            sub[~inside] = 255
+        meta = src.meta.copy()
+        meta.update(nodata=255)
+        mf = MemoryFile()
+        ds = mf.open(**meta)
+        ds.write(data, 1)
+        datasets.append(ds)
+        memfiles.append(mf)
+    return datasets, memfiles
+
+
+def calculate_zonal_stats(geom_input, tiff_paths: list, sheet_polygons: list | None = None) -> dict:
     # 1. ПАРСИНГ ГЕОМЕТРИИ
     try:
         if isinstance(geom_input, str):
@@ -83,9 +134,18 @@ def calculate_zonal_stats(geom_input, tiff_paths: list) -> dict:
         return {}
 
     meta = srcs[0].meta
-    data, transform = merge(srcs, nodata=255)
+    # round57, D2: при 2+ листах — каждый лист маскируется своим полигоном до merge.
+    # Один лист: участок целиком внутри его полигона, маскирование ничего не меняет.
+    masked_ds, masked_mfs = [], []
+    if sheet_polygons is not None and len(srcs) > 1:
+        masked_ds, masked_mfs = _mask_sheets_by_polygons(srcs, sheet_polygons, geometry_dict)
+        data, transform = merge(masked_ds, nodata=255)
+    else:
+        data, transform = merge(srcs, nodata=255)
     meta.update(transform=transform, width=data.shape[2], height=data.shape[1], nodata=255)
     [src.close() for src in srcs]
+    [ds.close() for ds in masked_ds]
+    [mf.close() for mf in masked_mfs]
 
     from rasterio.io import MemoryFile
     with MemoryFile() as memfile:
