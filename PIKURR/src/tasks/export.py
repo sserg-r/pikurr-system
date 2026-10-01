@@ -1,12 +1,16 @@
 import logging
+import math
 import subprocess
 from pathlib import Path
 from typing import List, Dict
 
 import numpy as np
 import rasterio
-from rasterio.features import rasterize
+from rasterio.features import geometry_mask, rasterize
+from rasterio.transform import Affine
 from shapely import wkb
+from shapely.geometry import mapping
+from shapely.ops import transform as shp_transform
 
 from src.core.config import settings
 from src.services.db import DatabaseService
@@ -46,10 +50,40 @@ def _convert_to_cog(path: Path) -> None:
         return
     tmp_path.replace(path)
 
+_Z17_PX = 256 * 2 ** 17  # ширина мира в пикселях сетки тайлов z17
+
+
+def _lonlat_to_global_px(lon, lat):
+    """lon/lat (EPSG:4326) -> глобальные пиксели Web Mercator z17 (общие для всех листов)."""
+    x = (lon + 180.0) / 360.0 * _Z17_PX
+    y = (1.0 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2.0 * _Z17_PX
+    return x, y
+
+
+def sheet_polygon_mask(polygon, transform, shape) -> np.ndarray:
+    """round57, D3: маска «пиксель принадлежит полигону листа» (центр пикселя внутри).
+
+    Строится в ГЛОБАЛЬНЫХ пикселях z17, а не по геопривязке конкретного растра:
+    растры соседних листов привязаны к одной целочисленной сетке (угол — целое число
+    пикселей), а вот широта пикселя по линейной геопривязке у соседей слегка
+    различается; по геопривязке пиксель на общей границе мог бы достаться обоим
+    листам. В глобальной сетке общая граница — одни и те же вершины, пиксель
+    принадлежит ровно одному листу."""
+    x0 = round((transform.c + 180.0) / 360.0 * _Z17_PX)
+    y0 = round(_lonlat_to_global_px(0.0, transform.f)[1])
+    def _to_px(xs, ys, zs=None):
+        pts = [_lonlat_to_global_px(x, y) for x, y in zip(xs, ys)]
+        return tuple(zip(*pts))
+    poly_px = shp_transform(_to_px, polygon)
+    return geometry_mask([mapping(poly_px)], out_shape=shape,
+                         transform=Affine(1.0, 0.0, x0, 0.0, 1.0, y0), invert=True)
+
+
 class ExportTask:
     def __init__(self):
         self.db = DatabaseService(settings)
         self.trap_table = settings.dbtables.trap
+        self.razgr_table = settings.dbtables.razgr
         self.final_dir = settings.paths.predictions_final
         self.progress: ProgressReporter | None = None
         # Сохраняем в public_root (или predictions/public, если в конфиге нет)
@@ -79,6 +113,15 @@ class ExportTask:
             query = f"SELECT trapeze FROM {self.trap_table}"
             df = self.db.execute_query(query)
             return df['trapeze'].tolist()
+
+    def get_sheet_polygon(self, trap_name: str):
+        """Полигон листа из razgrafka (None, если листа там нет)."""
+        df = self.db.execute_query(
+            f"SELECT ST_AsBinary(geom) AS geom_wkb FROM {self.razgr_table} WHERE n10000 = %(name)s",
+            {'name': trap_name})
+        if df.empty:
+            return None
+        return wkb.loads(bytes(df.iloc[0]['geom_wkb']))
 
     def get_field_geometries(self, trap_name: str) -> List:
         """
@@ -162,6 +205,16 @@ class ExportTask:
                 # Тогда Лес=1, Фон=0 (от маски).
                 
                 masked_data = (data.astype(np.uint16) + 1) * mask
+
+                # round57, D3: публичный растр листа — только внутри полигона этого листа,
+                # вне полигона 0 (прозрачно). Холст листа шире полигона (целые тайлы z17,
+                # до +255 пикс), раньше полоса за полигоном попадала в публичный растр и
+                # перекрывалась растром соседа; мозаика GeoServer показывала произвольный лист.
+                sheet_poly = self.get_sheet_polygon(trap_name)
+                if sheet_poly is not None:
+                    masked_data = masked_data * sheet_polygon_mask(sheet_poly, src.transform, (src.height, src.width))
+                else:
+                    logger.warning(f"Лист {trap_name} не найден в razgrafka — маска по полигону не применена")
                 
                 # Возвращаем в uint8 (если влезает)
                 masked_data = masked_data.astype(np.uint8)
