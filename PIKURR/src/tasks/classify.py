@@ -124,7 +124,9 @@ class ClassificationTask:
                         destination=on_canvas,
                         src_transform=usab_transform, src_crs=usab_crs,
                         dst_transform=profile['transform'], dst_crs=profile['crs'],
-                        src_nodata=None, dst_nodata=0,
+                        # nodata не задаются: при dst_nodata=0 rasterio считает нули источника
+                        # «нет данных» и маска раздувается (проверено на подмножестве, round57 C1);
+                        # приёмник инициализирован нулями, вне охвата usab остаётся 0.
                         resampling=Resampling.nearest,
                     )
                     combined_usab = on_canvas
