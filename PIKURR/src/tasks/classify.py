@@ -5,6 +5,7 @@ from typing import List
 import numpy as np
 import rasterio
 from rasterio.features import sieve
+from rasterio.warp import Resampling, reproject
 from skimage.morphology import closing, disk
 from skimage.transform import resize
 
@@ -63,6 +64,8 @@ class ClassificationTask:
 
         # 2. Загружаем данные используемости (Usability) за 3 года
         usab_data_list = []
+        usab_transform = None  # геопривязка маски usab (первый прочитанный год)
+        usab_crs = None
         for year in years:
             usab_path = self.usab_dir / str(year) / f"{trap_id}.tif"
             
@@ -71,6 +74,9 @@ class ClassificationTask:
                     with rasterio.open(usab_path) as src:
                         data = src.read(1)
                         usab_data_list.append(data)
+                        if usab_transform is None:
+                            usab_transform = src.transform
+                            usab_crs = src.crs
                 except Exception:
                     continue
         
@@ -105,12 +111,23 @@ class ClassificationTask:
                 # sieve требует int, поэтому кастим в uint8
                 combined_usab = sieve(combined_usab.astype(rasterio.uint8), 10, connectivity=4)
                 
-                # 3. Ресайз до размера маски растительности (Land Mask)
-                # Оригинал использовал resize без параметров (что дает float [0..1]).
-                # land_mask имеет высокое разрешение (тайлы), GEE - низкое (10м).
-                # Поэтому ресайз обязателен.
-                if combined_usab.shape != land_mask_data.shape:
-                    combined_usab = resize(combined_usab, land_mask_data.shape, preserve_range=True)
+                # 3. Перенос маски на сетку маски растительности (Land Mask) ПО ГЕОПРИВЯЗКЕ
+                # (round57, D1). Раньше здесь был resize(combined_usab, land_mask_data.shape):
+                # он растягивал маску размера рамки листа (usab покрывает bbox полигона
+                # листа, ±10 м) на весь холст (целые тайлы z17, до +255 пикс с каждой
+                # стороны) без учёта геопривязки — смещение до ≈170 м (docs/round56-overlap-docs.md,
+                # A2.3). Пиксели холста вне охвата usab получают 0 («обработки нет»).
+                if combined_usab.shape != land_mask_data.shape or usab_transform != profile['transform']:
+                    on_canvas = np.zeros(land_mask_data.shape, dtype=np.uint8)
+                    reproject(
+                        source=combined_usab.astype(np.uint8),
+                        destination=on_canvas,
+                        src_transform=usab_transform, src_crs=usab_crs,
+                        dst_transform=profile['transform'], dst_crs=profile['crs'],
+                        src_nodata=None, dst_nodata=0,
+                        resampling=Resampling.nearest,
+                    )
+                    combined_usab = on_canvas
             
             except Exception as e:
                 logger.error(f"Error processing morphology for {trap_id}: {e}")
