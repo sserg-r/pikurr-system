@@ -138,6 +138,13 @@ def calculate_zonal_stats(geom_input, tiff_paths: list, sheet_polygons: list | N
     # Один лист: участок целиком внутри его полигона, маскирование ничего не меняет.
     masked_ds, masked_mfs = [], []
     if sheet_polygons is not None and len(srcs) > 1:
+        # Сетка merge (разрешение и привязка) определяется ПЕРВЫМ источником, а у соседних
+        # листов разрешение по широте чуть различается — порядок источников влиял бы на
+        # выбор пикселей даже при непересекающихся масках. Порядок фиксируется по имени файла.
+        order = sorted(range(len(srcs)), key=lambda i: str(tiff_paths[i]))
+        srcs = [srcs[i] for i in order]
+        sheet_polygons = [sheet_polygons[i] for i in order]
+        meta = srcs[0].meta
         masked_ds, masked_mfs = _mask_sheets_by_polygons(srcs, sheet_polygons, geometry_dict)
         data, transform = merge(masked_ds, nodata=255)
     else:
