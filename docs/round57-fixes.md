@@ -139,3 +139,12 @@
 2. Три дефекта собственных правок (D1 nodata, D4 тип `ball_co`, D2 порядок источников) найдены проверкой C до выкатки.
 3. Эмулятор: `healthcheck.py` в доставке красный по `gwc_layers`/`filtered_layer` из-за незаданных путей к `support_data` в `deliver.env` — окружение, не код.
 4. ETL-база стенда хранит три представления v3 (после `initialize`), не используемые конвейером.
+
+## Дополнение: доставка на прод (выполнена по просьбе пользователя, 2026-10-01)
+
+1. `deploy_backend_vps.sh --apply`: расхождение было одно — `deliver.py` (константа `SCHEMA_VERSION = 4`); бэкап `deliver.py.bak_pre_deploy_20261001_222144` на VPS, `py_compile` OK, повторный `--check` — расхождений нет.
+2. Предусловия: `inbox/` пуст, стек работает (4 контейнера), свободно 14 ГБ, `DELIVERY_HOST` контейнера указывает на прод (проверено сравнением, без вывода значения).
+3. **Первая попытка `push` упала** (`rsync … code 255`): контейнер `etl` на стенде был пересоздан в раундах 54 и 56 только с `-f docker-compose.yml`, без `docker-compose.override.yml` — ключи доставки не смонтированы (`/root/.ssh/id_rsa` — пустой каталог). Контейнер пересоздан с обоими файлами (`--no-deps`), ключи на месте; на проде ничего не изменилось. Правило добавлено в `CLAUDE.md`.
+4. **Доставка:** `push` повторён — `pikurr_update_2025_2026-10-01_16-32.zip`; статус на VPS: `ok: true`, `granules_after: 912`, `refresh_seconds` 26,8, **5,8 мин**; `healthcheck` — все проверки OK (включая `gwc_layer[…]`, `districts_ref_json`, `db_matches_static`); прогрев GWC: `fields_latest` 1835/1835, `image_assessment` 1992/1992, без `shortfall_warning`; бэкап `pg_dump` — `/home/sgr/repikurr/backups/backup_20261001_192631.dump` (66,3 МБ, `ok`); манифест: `etl_git_commit` `625a0199…`, `vectors_gpkg_sha256` `f412714c…`.
+5. **После доставки:** `assessment_ready`, `assessment_ready_latest`, `levelsagg_ready` — `schema_version=4`, `ispopulated = t`, 55 784 строки; WFS прода (`wfs_check.py`): пять контрольных участков равны ожидаемым значениям «после» из E3 (в т. ч. `22490000030364`: `area_ha` 1,21), `2212000055` — 1 объект, 5,6 га, `tillage`; район 2212 — 9 039 объектов, 84 731,8 га, clearing 1 916 / forest 439 / meadow 5 306 / tillage 1 378; `smoke.mjs` против прода — **23/23**.
+6. Откат (если понадобится): данные — `pg_restore` указанного дампа + доставка пакета A; схема — вернуть `deliver.py.bak_pre_deploy_20261001_222144` (иначе пакет схемы 3 отклонит охрана версии). Прежние пакеты A и B на стенде не удалялись.

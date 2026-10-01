@@ -504,6 +504,12 @@ HTTP-доступ к `192.168.251.190` (порты 80/8090) может не пр
   `pikurr-system-etl:pre_round57_20261001_155302`, бэкапы
   `predictions_final/2025_before_round57`, `geoserver_public/2025_before_round57`,
   `outputs/backups_round57/assessment_*.dump`. Отчёт — `docs/round57-fixes.md`.
+- **Контейнер `etl` на стенде пересоздавать с ДВУМЯ файлами:** `docker compose -f docker-compose.yml -f docker-compose.override.yml up -d --force-recreate --no-deps etl`.
+  Только с `-f docker-compose.yml` ключи доставки (`~/.ssh/pikurr_delivery_ed25519`,
+  `known_hosts_pikurr_delivery`) не монтируются, `/root/.ssh/id_rsa` становится
+  пустым каталогом, `push` падает `rsync … code 255` (найдено round57 при доставке на
+  прод; контейнер был пересоздан без override в round54/56). Отправка на прод —
+  `docker compose -f docker-compose.yml -f docker-compose.override.yml run --rm etl python -m src.tasks.push`.
 - **Значения переменных окружения не выводить никогда — только имена**
   (`env | cut -d= -f1`, `docker inspect … | sed 's/=.*//'` недостаточно:
   многострочное значение ломает построчное усечение). Инцидент round56:
@@ -712,7 +718,7 @@ round33) не предотвращает баги, но не даёт будущ
 
 ## Текущее состояние системы
 
-- **Схема БД**: `SCHEMA_VERSION = 4` в репозитории (`REPIKURR/deliver.py`, SQL, round57); **на проде до доставки пакета `pikurr_update_2025_2026-10-01_16-32.zip` — 3**. Перед доставкой обязательно `deploy_backend_vps.sh --apply` (иначе старый `deliver.py` с константой 3 сочтёт схему актуальной и не пересоздаст представления). Три
+- **Схема БД**: `SCHEMA_VERSION = 4` в репозитории (`REPIKURR/deliver.py`, SQL, round57); **на проде 4 с 2026-10-01** (доставлен пакет `pikurr_update_2025_2026-10-01_16-32.zip`, ETL `625a019`). Правило остаётся: при смене версии схемы сначала `deploy_backend_vps.sh --apply` (старый `deliver.py` с прежней константой сочтёт схему актуальной и не пересоздаст представления). Три
   материализованных представления: `assessment_ready`,
   `assessment_ready_latest`, `levelsagg_ready` (все должны быть
   `ispopulated = t`).
