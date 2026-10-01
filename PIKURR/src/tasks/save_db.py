@@ -9,13 +9,13 @@ from typing import Dict, List
 
 import pandas as pd
 from shapely.geometry import shape
-from tqdm import tqdm
 
 import datetime
 
 from src.core.config import settings
 from src.services.db import DatabaseService
 from src.utils.postclassify import calculate_zonal_stats
+from src.utils.progress import ProgressReporter
 from src.utils.timeutils import get_target_year
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ class SaveStatsTask:
         self.afields = settings.dbtables.afields
         self.razgr = settings.dbtables.razgr
         self.final_dir = settings.paths.predictions_final
+        self.progress: ProgressReporter | None = None
 
     def get_target_year(self) -> int:
         return get_target_year()
@@ -100,12 +101,22 @@ class SaveStatsTask:
 
         logger.info(f"Processing {len(fields_df)} fields for year {year}")
 
-        for _, field_row in tqdm(fields_df.iterrows(), total=total_fields, desc="Saving stats"):
+        # Прогресс — через logging (ProgressReporter), как в остальных задачах;
+        # tqdm писал в stderr, панель управления его не перехватывает.
+        self.progress = ProgressReporter(
+            name="save_db", total_outer=total_fields, logger=logger,
+            outer_name="участок", inner_name="участки", rate_unit="участок",
+        )
+        for _, field_row in fields_df.iterrows():
+            self.progress.start_outer(str(field_row['nr_user']), total_inner=1)
             try:
                 self.process_field(field_row, year)
+                self.progress.tick(1)
             except Exception as e:
                 logger.error(f"Error processing field {field_row['nr_user']}: {e}")
-            
+                self.progress.tick_failed(1)
+            self.progress.finish_outer()
+        self.progress.finish()
 
 
 def task_save_db():

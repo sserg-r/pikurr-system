@@ -7,10 +7,10 @@ import numpy as np
 import rasterio
 from rasterio.features import rasterize
 from shapely import wkb
-from tqdm import tqdm
 
 from src.core.config import settings
 from src.services.db import DatabaseService
+from src.utils.progress import ProgressReporter
 from src.utils.timeutils import get_target_year
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,7 @@ class ExportTask:
         self.db = DatabaseService(settings)
         self.trap_table = settings.dbtables.trap
         self.final_dir = settings.paths.predictions_final
+        self.progress: ProgressReporter | None = None
         # Сохраняем в public_root (или predictions/public, если в конфиге нет)
         self.public_dir = settings.paths.public_root 
         
@@ -186,8 +187,18 @@ class ExportTask:
         logger.info(f"Exporting {len(trapezes)} trapezes for year {year}")
         logger.info(f"Target directory {self.final_dir / str(year)}")
         
-        for trap in tqdm(trapezes, desc="Exporting Public Data"):
+        # Прогресс — через logging (ProgressReporter), как в остальных задачах;
+        # tqdm писал в stderr, панель управления его не перехватывает.
+        self.progress = ProgressReporter(
+            name="export", total_outer=len(trapezes), logger=logger,
+            outer_name="лист", inner_name="листы", rate_unit="лист",
+        )
+        for trap in trapezes:
+            self.progress.start_outer(trap, total_inner=1)
             self.process_trapeze(trap, year)
+            self.progress.tick(1)
+            self.progress.finish_outer()
+        self.progress.finish()
         logger.info("Export complete.")
 
 def task_publicdata():
