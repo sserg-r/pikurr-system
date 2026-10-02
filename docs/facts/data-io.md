@@ -118,18 +118,18 @@ COG). Координаты растра листа — граница листа
 
 ## 3. БД витрины: представления
 
-### 3.1. Материализованные представления (`schema.sql`, `SCHEMA_VERSION = 3`, `SS` §3)
+### 3.1. Материализованные представления (`create_assessment_schema.sql`, `SCHEMA_VERSION = 4`, `SS` §3)
 
-`assessment_ready` — все годы; строка = поле × год:
+`assessment_ready` — все годы; строка = участок × год (версия 4, раунд 57, D4: `agrifields` сводится подзапросом `GROUP BY nr_user` к одной строке на `nr_user`):
 
 | Колонка | Источник/выражение |
 |---|---|
-| `nr_user` | `agrifields.nr_user` (по `DISTINCT ON (nr_user)`) |
+| `nr_user` | `agrifields.nr_user` (`GROUP BY nr_user`) |
 | `district` | `LEFT(nr_user, 4)` |
-| `geom` | `agrifields.geom` |
+| `geom` | `ST_Multi(ST_Union(geom))` частей участка (при одной части — её геометрия как есть), `geometry(MultiPolygon,4326)` |
 | `year`, `description`, `stats`, `updated_at` | `assessment` (`JOIN … ON nr_user::bigint = fid_ext`) |
-| `area_ha` | `ROUND(ST_Area(geom::geography)/10000, 2)` |
-| `ball_co` | `agrifields.ball_co` |
+| `area_ha` | `ROUND(ST_Area(geom::geography)/10000, 2)` — по объединённой геометрии |
+| `ball_co` | `(array_agg(ball_co ORDER BY ogc_fid))[1]`, `numeric(24,15)`; `ndohod_d` — так же |
 | `bzdz` | текст-категория по `ndohod_d` (см. `legacy-diff.md`, А2-6) |
 | `valuation` | `forest` / `clearing` / `tillage` / `meadow` (`legacy-diff.md`, А2-6) |
 
@@ -137,7 +137,7 @@ COG). Координаты растра листа — граница листа
 `assessment_ready_latest` — `DISTINCT ON (nr_user)` по последнему году
 (`UNIQUE (nr_user)`, GIST `geom`). `levelsagg_ready` — `DISTINCT usname,
 usern_co, LEFT(usern_co,4) AS rn` из `agrifields` (`UNIQUE` по трём колонкам).
-Маркер версии — `COMMENT ON MATERIALIZED VIEW … IS 'schema_version=3'`.
+Маркер версии — `COMMENT ON MATERIALIZED VIEW … IS 'schema_version=4'`. `deliver.py` пересоздаёт представления, если версия на объекте (COMMENT) расходится с `SCHEMA_VERSION` кода; охрана пакета отклоняет пакет со схемой старше версии кода.
 Все три должны быть `ispopulated = t` (`CLAUDE.md`, «Текущее состояние»).
 
 Объёмы на VPS (`pg_total_relation_size`, 2026-09-30): `agrifields` 90 МБ,
@@ -145,7 +145,17 @@ usern_co, LEFT(usern_co,4) AS rn` из `agrifields` (`UNIQUE` по трём ко
 `assessment_ready_latest` 220 МБ, `levelsagg_ready` 144 кБ; вся БД —
 580 МБ (`docker system df`/`psql`).
 
-### 3.2. Заглушки для чистого инстанса
+### 3.2. Дубли полигонов в исходном слое (раунд 57, блок A)
+
+В `agrifields` 3 425 значений `nr_user` встречаются более одного раза; из них
+3 424 — дубли одного и того же полигона (то же число вершин, различие площади
+~1e-10; «разная геометрия» в раунде 56 была различием байтов GPKG).
+По-настоящему многочастный участок один — `22490000030364` (две
+непересекающиеся части, 0,58 + 0,63 га; на витрине `area_ha` 1,21). Исходные
+полигоны не менялись; сведение к одной записи на `nr_user` выполняется в
+`save_db` (`get_fields`) и в `assessment_ready` (схема 4).
+
+### 3.3. Заглушки для чистого инстанса
 
 `PIKURR/src/sqlscripts/bootstrap_empty_schema.sql` — пустые `assessment`,
 `assessment_ready`, `assessment_ready_latest` для первого старта GeoServer
