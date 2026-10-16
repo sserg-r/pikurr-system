@@ -60,27 +60,27 @@ with st.sidebar:
     # --- Инфо о сервисах ---
     st.markdown("**🔌 Сервисы:**")
 
-    # --- Инференс (ONNX Runtime, раунд 7 — заменил TF Serving) ---
-    import os
-    import onnxruntime as ort
+    # --- Инференс и GEE (round61, блок B): настоящие проверки, кэш 10 минут ---
+    # Пути проверок — те же, что у рабочих шагов (InferenceService / GEEService),
+    # см. src/services/health.py. Сбой проверки не роняет панель.
+    from src.services import health
 
-    onnx_path = settings.inference.onnx_model_path
-    available_providers = ort.get_available_providers()
-    wanted_provider = settings.inference.provider
+    if st.button("🔄 Перепроверить", help="Сбросить кэш проверок (10 минут) и проверить заново"):
+        health.reset_cache()
 
-    if not os.path.exists(onnx_path):
-        st.error(f"❌ **Inference (ONNX):** модель не найдена\n`{onnx_path}`")
-    elif wanted_provider not in available_providers:
-        st.error(
-            f"❌ **Inference (ONNX):** провайдер `{wanted_provider}` недоступен\n"
-            f"Доступны: {available_providers}"
-        )
-    else:
-        st.success(f"✅ **Inference (ONNX Runtime, {wanted_provider})**")
-    
-    # GEE
-    project = settings.gee.project
-    st.info(f"✅ **GEE Service Account**")
+    def _show_status(status):
+        text = status.text
+        if status.state == health.OK:
+            st.success(text)
+        elif status.state == health.UNVERIFIED:
+            st.warning(text)
+        else:
+            st.error(text)
+            if status.hint:
+                st.caption(status.hint)
+
+    _show_status(health.get_status("inference"))
+    _show_status(health.get_status("gee"))
 
     st.markdown("---")
 
@@ -279,7 +279,7 @@ def run_pipeline():
 
         # Отправляем ошибку в Телеграм (обрезаем, если слишком длинная)
         short_error = str(e)[:200]
-        notifier.send(f"Процесс аварийно остановлен!\n\nОшибка: `{short_error}`", status="error")
+        notifier.send(f"Процесс аварийно остановлен!\n\nОшибка: {short_error}", status="error")
 
 def show_results():
     st.markdown("---")
