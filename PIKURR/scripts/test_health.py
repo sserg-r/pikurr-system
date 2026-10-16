@@ -26,7 +26,7 @@ fake_settings = ns(
 cfg = types.ModuleType("src.core.config")
 cfg.settings = fake_settings
 sys.modules.setdefault("src", types.ModuleType("src")).__path__ = [os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")]
-sys.modules.setdefault("src.core", types.ModuleType("src.core")).__path__ = []
+sys.modules.setdefault("src.core", types.ModuleType("src.core")).__path__ = [os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src", "core")]
 sys.modules["src.core.config"] = cfg
 
 from src.services import health  # noqa: E402
