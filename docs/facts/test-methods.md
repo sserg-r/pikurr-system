@@ -235,7 +235,7 @@ docstring** («`docker compose run --rm etl python test_round5_download.py`»,
 | `src/tasks/export.py` | растеризация маски, сдвиг `+1`, COG-конвертация, транслитерация имён |
 | `src/tasks/package.py` | экспорт GPKG, манифест 2.1, `check_missing_sheets`, состав ZIP |
 | `src/tasks/push.py` | выбор последнего пакета (`_package_sort_key`), `rsync`, опрос статуса |
-| `src/utils/timeutils.py` | `get_target_year` (граница ноября) |
+| `src/utils/timeutils.py` | `get_target_year` (граница — конец окна снимков + 5 дней, с 20 октября; round62) |
 | `src/core/config.py` | загрузка и валидация настроек |
 | `dashboard.py`, `pipeline.py`, `src/services/notifier.py` | запуск цикла, плашки, Telegram |
 | `src/sqlscripts/create_assessment_schema.sql` | создание схемы на пустой БД, совместимость с `save_db.py` (см. `etl-route.md`, шаг 1) |

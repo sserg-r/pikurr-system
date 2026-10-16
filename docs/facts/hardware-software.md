@@ -24,7 +24,7 @@
 |---|---|---|
 | Процессор | 13th Gen Intel Core i5-13400, 16 логических CPU (2 потока на ядро), 1 сокет, макс. 4,6 ГГц (мин. 0,8 ГГц) | `lscpu` |
 | Оперативная память | 62 ГиБ (занято 6,8 ГиБ, доступно 55 ГиБ на момент замера) | `free -h` |
-| GPU | NVIDIA GeForce RTX 5070 Ti, 16 303 МиБ видеопамяти, драйвер 575.64, CUDA 12.9 | `nvidia-smi` |
+| GPU | NVIDIA GeForce RTX 5070 Ti, 16 303 МиБ видеопамяти, драйвер 575.64, CUDA 12.9 | `nvidia-smi` (повторно подтверждено 2026-10-16 на хосте `user-MS-7E01`, 192.168.251.190: `NVIDIA GeForce RTX 5070 Ti, 575.64`; RTX 2060 — GPU другой машины, координатора `sgr` 192.168.250.208) |
 | ОС | Ubuntu 24.04.2 LTS, ядро 6.2.0-39-generic | `/etc/os-release`, `uname -r` |
 | Docker | Docker Engine 25.0.2, Compose v2.24.5 | `docker --version`, `docker compose version` |
 | NVIDIA Container Toolkit | 1.17.8 | `nvidia-ctk --version` |

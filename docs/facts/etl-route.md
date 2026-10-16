@@ -293,7 +293,15 @@ initialize → download → segmentate → usability → classify → save_db �
 - **Вход**: `agrifields` ⨝ `razgrafka` по `ST_Intersects`
   (`array_agg(n10000) AS frames`, `save_db.py:34-45`); растры
   `predictions_final/<год>/<лист>.tif`; год — `get_target_year()`
-  (`save_db.py:97`).
+  (`save_db.py`).
+
+**Расчётный год (round62, Р5-б).** Единственный источник — `src/utils/timeutils.get_target_year()`;
+`usability`/`classify` берут `get_target_years(3)`, `save_db`/`export`/`package` — `get_target_year()` (методы-обёртки,
+собственных вычислений года от даты в `package.py` больше нет). Правило: год текущий, если дата ≥ конец окна снимков
++ запас, иначе прошлый; константы — `src/core/season.py` (окно `04-15…10-15`, запас 5 дней → с **20 октября**), окно GEE
+(`gee.py`, `season_window`) берёт их же. До round62 правило было «с ноября» (`месяц < 11` → прошлый год) и дублировалось в
+`package.py`. Панель до запуска показывает «Расчётный год: N» (`describe_target_year()`). Тест —
+`PIKURR/scripts/test_target_year.py`.
 - **Вход (участки)**: `agrifields` сводится к одной строке на `nr_user`
   (CTE `u`: `ST_Union` частей, `ST_Multi`; участок из одной части берётся как
   есть), ⨝ `razgrafka` по `ST_Intersects`, `array_agg(n10000 ORDER BY n10000)`
