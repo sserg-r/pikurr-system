@@ -114,7 +114,7 @@ export default function Sidebar({
       await fetchAndSaveFile('/pikurr_qgis_readme.txt', 'pikurr_qgis_readme.txt');
     } catch (e) {
       setQgisDownloadError(
-        `Не удалось скачать файл для QGIS: ${e.message}. Попробуйте позже или сообщите администратору.`
+        `Не удалось скачать файл для QGIS: ${e.message}. Повторите попытку позже.`
       );
     }
   };

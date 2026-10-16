@@ -558,6 +558,29 @@ async function main() {
   }
   record('13b. pikurr_qgis.zip соответствует pikurr_qgis.sha256', shaDriftOk, shaDriftDetail)
 
+  // ---- 13c. Сообщение при сорванном скачивании файла для QGIS (round61, E) --
+  // Запрос архива сорван через page.route (404). Ожидание: под кнопкой показано
+  // сообщение с текстом ошибки и «Повторите попытку позже», без обещания канала
+  // связи («администратор»).
+  let dlErrOk = false
+  let dlErrDetail = 'пропущено'
+  try {
+    await page.route('**/pikurr_qgis.zip', route =>
+      route.fulfill({ status: 404, contentType: 'text/plain', body: 'not found' }))
+    await page.locator('button.download-btn').click()
+    const errLoc = page.locator('.qgis-download-error')
+    await errLoc.waitFor({ state: 'visible', timeout: 5000 })
+    const msg = (await errLoc.innerText()).trim()
+    dlErrOk = msg.includes('Не удалось скачать файл для QGIS') && msg.includes('код 404') &&
+      msg.includes('Повторите попытку позже') && !/администратор/i.test(msg)
+    dlErrDetail = `сообщение="${msg}"`
+  } catch (e) {
+    dlErrDetail = `сообщение не появилось: ${e.message.split('\n')[0]}`
+  } finally {
+    await page.unroute('**/pikurr_qgis.zip')
+  }
+  record('13c. Ошибка скачивания файла для QGIS: текст ошибки, без «администратор»', dlErrOk, dlErrDetail)
+
   await browser.close()
 
   // round35, блок B1: дамп перехваченных GWC-URL для healthcheck.py —
