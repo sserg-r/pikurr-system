@@ -26,14 +26,15 @@ class TelegramNotifier:
         }
         icon = icons.get(status, "")
         
-        # Формируем текст
-        full_text = f"{icon} *PIKURR System*\n\n{message}"
+        # Простой текст, без parse_mode (round61, блок C): в legacy Markdown
+        # непарные «_», «*», «[», «`» в тексте (имена файлов, текст ошибки)
+        # дают 400 «can't parse entities», и аварийное сообщение терялось.
+        full_text = f"{icon} PIKURR System\n\n{message}"
         
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         data = {
             "chat_id": self.chat_id,
             "text": full_text,
-            "parse_mode": "Markdown"
         }
 
         try:
