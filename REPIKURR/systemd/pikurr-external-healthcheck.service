@@ -6,4 +6,6 @@ Documentation=https://github.com/sserg-r/PIKURR_REFACTOR
 Type=oneshot
 User=user
 WorkingDirectory=/home/user/repikurr
+# round61: токен и чат Telegram (права 600, вне git); «-» — файла может не быть
+EnvironmentFile=-/home/user/repikurr/external_healthcheck.env
 ExecStart=/bin/bash /home/user/repikurr/external_healthcheck.sh
