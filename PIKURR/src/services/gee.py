@@ -6,6 +6,7 @@ from rasterio.io import MemoryFile
 from typing import List, Dict, Union, Optional
 
 from src.core.config import settings
+from src.core.season import season_window
 
 class GEEService:
     def __init__(self):
@@ -35,7 +36,7 @@ class GEEService:
             raise ValueError(f'Area of AOI: {aoi_area} > 25000000 sq m')
 
         # 2. Настройка коллекций
-        fdate = ee.Filter.date(f'{year}-04-15', f'{year}-10-15')
+        fdate = ee.Filter.date(*season_window(year))  # round62: окно из src.core.season (04-15…10-15)
         cs_plus = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED')
         s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
 

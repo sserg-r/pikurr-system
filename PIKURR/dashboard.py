@@ -42,6 +42,11 @@ st.markdown("""
 
 st.title("🛰️ PIKURR: Панель управления")
 
+# Расчётный год (round62, Р5-б): единый источник — src.utils.timeutils; показывается до запуска,
+# чтобы прогон «не за тот год» было видно заранее.
+from src.utils.timeutils import describe_target_year
+st.info(f"📅 {describe_target_year()}")
+
 # --- 3. БОКОВАЯ ПАНЕЛЬ (ИНФО О СИСТЕМЕ) ---
 with st.sidebar:
     st.header("⚙️ Статус системы")

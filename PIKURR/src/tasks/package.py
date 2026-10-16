@@ -10,6 +10,7 @@ from pathlib import Path
 
 from src.core.config import settings
 from src.services.db import DatabaseService
+from src.utils.timeutils import get_target_year
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +43,8 @@ class PackageTask:
         })
         
     def get_target_year(self) -> int:
-        now = datetime.datetime.now()
-        if now.month < 11:
-            return now.year - 1
-        return now.year
+        # round62: единый источник года (без собственной копии правила)
+        return get_target_year()
 
     def export_vectors(self, output_gpkg: Path):
         """Экспорт таблиц из PostGIS в GeoPackage через ogr2ogr.
