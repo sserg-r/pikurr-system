@@ -133,7 +133,7 @@
 | `REPIKURR/tools/gen_districts_ref.py --check` | `public/districts_ref.json` против `constants.js` | `python3 REPIKURR/tools/gen_districts_ref.py --check` | локально; вызывается `deploy_frontend_vps.sh` |
 | `REPIKURR/deploy_backend_vps.sh --check` | sha256 `deliver.py`, `healthcheck.py`, `watchdog.py` и вспомогательных файлов на VPS против репозитория | `REPIKURR/deploy_backend_vps.sh --check` (`VPS_HOST` параметризован) | SSH к VPS |
 | `REPIKURR/tools/tile_math.py --self-check` | математика lon/lat↔тайл против `docs/round32_assets/tiles_with_data.json` (20 записей) | `python3 REPIKURR/tools/tile_math.py --self-check` | локально |
-| Внутри `deliver.py`: предохранители | версия схемы (`SwapGuardError`), состав лет (`YearCompositionGuardError`), усадка (`SwapGuardError`), `pg_dump` до подмены; сверка засева GWC с геометрическим расчётом (`shortfall_warning`) | часть каждой доставки; обход — `--allow-year-change`, `--allow-shrink` | на сервере доставки |
+| Внутри `deliver.py`: предохранители | версия схемы (`SwapGuardError`), состав лет (`YearCompositionGuardError`; с round66 пропускает строгое расширение витрины годами после последнего, тесты — `test_year_composition.py`), усадка (`SwapGuardError`), `pg_dump` до подмены; сверка засева GWC с геометрическим расчётом (`shortfall_warning`) | часть каждой доставки; обход — `--allow-year-change`, `--allow-shrink` | на сервере доставки |
 | Внутри `package.py`: `check_missing_sheets` | TIF года против `trapeze_serv` (только `ERROR` в лог) | часть сборки пакета | ETL |
 
   Перечисленное — **предохранители и проверки конфигурации**, а не
