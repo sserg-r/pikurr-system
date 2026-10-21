@@ -373,6 +373,58 @@ def check_year_district(base_url: str, checks: list) -> dict | None:
     return data
 
 
+def check_raster_years(base_url: str, static_data: dict | None, checks: list):
+    """round64: растр КАЖДОГО года из year_district.json отдаётся тайлом WMS.
+
+    Слой последнего года — `image_assessment`, остальных — `image_assessment_<год>`
+    (именование задаёт deliver.py). `wms_getmap`/`gwc_layer[...]` проверяют только
+    текущий слой: при доставке нового года прошлый год мог остаться без стора, а
+    всё остальное было зелёным (round63, раздел 3.4). Тайл — заведомо непустой из
+    tiles_with_data (первый), критерий — как у `wms_getmap`: не ServiceException,
+    PNG с непустыми цветами. Пароль БД не нужен."""
+    years = static_data.get("years") if isinstance(static_data, dict) else None
+    if not years:
+        _check("raster_years", False,
+                "список лет неизвестен (year_district.json недоступен или пуст)", checks)
+        return
+    try:
+        tile = _load_tiles_with_data()[0]
+    except (FileNotFoundError, json.JSONDecodeError, IndexError) as e:
+        _check("raster_years", False,
+                f"{_tiles_with_data_path()} недоступен ({e}) — задать TILES_WITH_DATA_PATH", checks)
+        return
+    z = tile["z"]
+    x, y = _lonlat_to_tile(tile["lon"], tile["lat"], z)
+    bbox_str = ",".join(str(v) for v in _tile_bbox_3857(x, y, z))
+
+    latest = max(int(v) for v in years)
+    parts, all_ok = [], True
+    for year in sorted(int(v) for v in years):
+        layer = "image_assessment" if year == latest else f"image_assessment_{year}"
+        url = (
+            f"{base_url}/geoserver/{GEOSERVER_WORKSPACE}/wms"
+            "?service=WMS&version=1.1.0&request=GetMap"
+            f"&layers={GEOSERVER_WORKSPACE}:{layer}"
+            f"&bbox={bbox_str}&width=256&height=256&srs=EPSG:3857"
+            "&format=image/png&transparent=true"
+        )
+        try:
+            resp = requests.get(url, timeout=15)
+        except requests.RequestException as e:
+            all_ok = False
+            parts.append(f"{year} ({layer}): запрос не выполнен: {e}")
+            continue
+        body = resp.content
+        if b"ServiceExceptionReport" in body or b"ExceptionReport" in body:
+            all_ok = False
+            parts.append(f"{year} ({layer}): HTTP {resp.status_code}, тело — ServiceExceptionReport")
+            continue
+        ok, detail = _png_has_nonempty_colors(body)
+        all_ok = all_ok and ok
+        parts.append(f"{year} ({layer}): {'OK' if ok else 'FAIL'} — {detail}")
+    _check("raster_years", all_ok, "; ".join(parts), checks)
+
+
 def check_districts_ref(base_url: str, checks: list):
     """round47, блок A2/B4: справочник код->название района, который
     отдаёт плагин QGIS вместо собственной зашитой копии
@@ -491,6 +543,7 @@ def run_healthcheck(base_url: str) -> dict:
     check_error_path(base_url, checks)
     check_main_page(base_url, checks)
     static_data = check_year_district(base_url, checks)
+    check_raster_years(base_url, static_data, checks)
     check_districts_ref(base_url, checks)
     check_db_matches_static(static_data, checks)
     check_disk_space(checks)

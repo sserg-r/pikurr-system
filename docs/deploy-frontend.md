@@ -207,12 +207,27 @@ tail -f ~/repikurr/watchdog.log
 | `pikurr:fields_latest` | VirtualTable → `assessment_ready_latest` | Только свежайшая оценка |
 | `pikurr:levelsagg` | VirtualTable → `agrifields` | Список землепользователей |
 | `pikurr:image_assessment` | ImageMosaic → `data/geodata/2025/` | Растр последнего года |
-| `pikurr:image_assessment_2024` | ImageMosaic → `data/geodata/2024/` | Растр 2024 |
+| `pikurr:image_assessment_<год>` | ImageMosaic → `data/geodata/<год>/` | Растр прошлого года (создаётся доставкой) |
 
-При добавлении нового года растров:
-1. Скопировать конфиг `geoserver_data/workspaces/pikurr/image_assessment_2024/` → `image_assessment_{year}/`
-2. Исправить пути внутри `coveragestore.xml` и `coverage.xml`
-3. Перезапустить GeoServer: `docker restart pikurr_srv_geoserver`
+**Сторы растров по годам создаёт доставка (round64), вручную их заводить не нужно.**
+Последний год пакета — стор `image_assessment`; каждый прошлый год пакета —
+`image_assessment_<год>`. Если такого стора нет, `deliver.py` (шаг
+`ensure_year_stores`, сразу после `copy_rasters`, до `pg_dump` и подмены БД)
+читает с живого GeoServer стор, покрытие и слой `image_assessment` и создаёт
+новые с теми же стилем (`pikurr:raster_vegetation`), проекцией, параметрами
+мозаики и `dimensions` (прозрачность нулей); меняются имя, URL и
+`nativeCoverageName`. Любой ответ GeoServer не 2xx на шагах стора — ошибка
+доставки (`GeoServerStoreError`), а не предупреждение. Наличие растра каждого
+года проверяет `healthcheck.py` (`raster_years`). Конфигурация создаваемых
+сторов в `geoserver_data/` репозитория не хранится — хранится только образец
+`image_assessment`.
+
+Ручной вариант (только если автосоздание недоступно) — REST: `POST
+/rest/workspaces/pikurr/coveragestores` (type ImageMosaic, url
+`file:///mnt/data/geodata/<год>/`), harvest каталога
+(`POST …/external.imagemosaic`, text/plain, URL каталога), `POST
+…/coverages` (`name`, `nativeCoverageName=<год>`, поля покрытия с образца),
+`PUT /rest/layers/pikurr:image_assessment_<год>.json` со стилем с образца.
 
 ---
 

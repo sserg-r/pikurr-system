@@ -322,6 +322,13 @@ class SchemaVersionError(RuntimeError):
     pass
 
 
+class GeoServerStoreError(RuntimeError):
+    """round64, Р7-а: ответ GeoServer REST не 2xx на шаге стора растра года
+    (создание/обновление/индекс). Раньше это было предупреждением, и доставка
+    оставалась `ok` без работающего растра года ("всё зелёное, результат неверный")."""
+    pass
+
+
 class YearCompositionGuardError(RuntimeError):
     """round38, блок D2: набор лет в пакете отличается от набора лет,
     уже стоящего на боевой витрине. Тот же принцип, что SwapGuardError
@@ -1034,8 +1041,7 @@ def _rebuild_mosaic_index(store_name: str, year: int, auth: tuple):
     )
 
     resp = requests.post(f"{base}/reset", auth=auth, timeout=30)
-    if resp.status_code != 200:
-        logger.warning(f"  [{store_name}] предварительный reset вернул {resp.status_code}: {resp.text[:200]}")
+    _gs_require_2xx(resp, f"[{store_name}] предварительный reset")
 
     removed = []
     for f in _index_files_for_year(year):
@@ -1053,18 +1059,14 @@ def _rebuild_mosaic_index(store_name: str, year: int, auth: tuple):
             harvest_url, auth=auth, data=directory_uri,
             headers={"Content-type": "text/plain"}, timeout=180,
         )
-        if resp.status_code in (200, 201, 202):
-            logger.info(f"  [{store_name}] harvest каталога {directory_uri}: {resp.status_code}")
-        else:
-            logger.warning(f"  [{store_name}] harvest вернул {resp.status_code}: {resp.text[:300]}")
     except requests.RequestException as e:
-        logger.warning(f"  [{store_name}] harvest не выполнен: {e}")
+        raise GeoServerStoreError(f"[{store_name}] harvest не выполнен: {e}") from e
+    _gs_require_2xx(resp, f"[{store_name}] harvest каталога {directory_uri}")
+    logger.info(f"  [{store_name}] harvest каталога {directory_uri}: {resp.status_code}")
 
     resp = requests.post(f"{base}/reset", auth=auth, timeout=30)
-    if resp.status_code == 200:
-        logger.info(f"  [{store_name}] финальный reset выполнен")
-    else:
-        logger.warning(f"  [{store_name}] финальный reset вернул {resp.status_code}: {resp.text[:200]}")
+    _gs_require_2xx(resp, f"[{store_name}] финальный reset")
+    logger.info(f"  [{store_name}] финальный reset выполнен")
 
 
 def _truncate_gwc_layer_if_cached(store_name: str, auth: tuple):
@@ -1360,6 +1362,146 @@ def seed_gwc_cache(auth: tuple) -> dict:
     return {"enabled": True, "layers": results}
 
 
+def _gs_require_2xx(resp, what: str):
+    """round64, Р7-а: любой ответ не 2xx на шаге стора — исключение."""
+    if not (200 <= resp.status_code < 300):
+        raise GeoServerStoreError(f"{what}: GeoServer вернул {resp.status_code}: {resp.text[:300]}")
+
+
+# Поля покрытия, копируемые из образца (основной стор GEOSERVER_COVERAGESTORE).
+# Границы, сетка и размерности ридер считает сам по данным года; из образца
+# берётся то, что задаёт вид и поведение слоя (проекция, параметры мозаики,
+# прозрачность нулей — dimensions.nullValues, ключевые слова).
+_COVERAGE_TEMPLATE_KEYS = (
+    "description", "keywords", "projectionPolicy", "enabled", "advertised",
+    "parameters", "interpolationMethods", "defaultInterpolationMethod",
+    "requestSRS", "responseSRS", "dimensions", "metadata", "srs",
+)
+
+
+def _gs_get_json(url: str, auth: tuple, what: str) -> dict:
+    resp = requests.get(url, auth=auth, headers={"Accept": "application/json"}, timeout=30)
+    _gs_require_2xx(resp, what)
+    return resp.json()
+
+
+def _ensure_year_store(store_name: str, year: int, auth: tuple) -> bool:
+    """round64, Р7-а: гарантирует стор и покрытие `store_name` (ImageMosaic →
+    geodata/<год>) с параметрами, СКОПИРОВАННЫМИ с живого образца
+    GEOSERVER_COVERAGESTORE (стиль слоя, проекция, параметры мозаики). Не
+    задаёт их по памяти. Идемпотентна: частично созданное (стор без покрытия)
+    достраивается. Возвращает True, если что-то было создано.
+
+    Любой ответ не 2xx — GeoServerStoreError. Создание не меняет существующие
+    слои, поэтому безопасно выполнять до подмены данных БД."""
+    ws = GEOSERVER_WORKSPACE
+    ws_base = f"{GEOSERVER_URL}/rest/workspaces/{ws}"
+    store_url = f"{ws_base}/coveragestores/{store_name}"
+    cov_url = f"{store_url}/coverages/{store_name}"
+    created = False
+
+    resp = requests.get(f"{store_url}.json", auth=auth, timeout=30)
+    store_exists = resp.status_code == 200
+    if not store_exists and resp.status_code != 404:
+        raise GeoServerStoreError(
+            f"[{store_name}] проверка стора: GeoServer вернул {resp.status_code}: {resp.text[:300]}")
+
+    resp = requests.get(f"{cov_url}.json", auth=auth, timeout=30)
+    cov_exists = resp.status_code == 200
+    if not cov_exists and resp.status_code != 404:
+        raise GeoServerStoreError(
+            f"[{store_name}] проверка покрытия: GeoServer вернул {resp.status_code}: {resp.text[:300]}")
+
+    if store_exists and cov_exists:
+        return False
+
+    logger.info(f"  [{store_name}] стор/покрытие отсутствуют — создаю по образцу "
+                f"'{GEOSERVER_COVERAGESTORE}' (год {year})...")
+    tpl_store = _gs_get_json(
+        f"{ws_base}/coveragestores/{GEOSERVER_COVERAGESTORE}.json", auth,
+        f"образец стора '{GEOSERVER_COVERAGESTORE}'")["coverageStore"]
+    tpl_cov = _gs_get_json(
+        f"{ws_base}/coveragestores/{GEOSERVER_COVERAGESTORE}/coverages/{GEOSERVER_COVERAGESTORE}.json",
+        auth, f"образец покрытия '{GEOSERVER_COVERAGESTORE}'")["coverage"]
+    tpl_layer = _gs_get_json(
+        f"{GEOSERVER_URL}/rest/layers/{ws}:{GEOSERVER_COVERAGESTORE}.json", auth,
+        f"образец слоя '{GEOSERVER_COVERAGESTORE}'")["layer"]
+
+    directory_uri = f"file:///mnt/data/geodata/{year}/"
+    if not store_exists:
+        resp = requests.post(
+            f"{ws_base}/coveragestores", auth=auth, timeout=30,
+            json={"coverageStore": {
+                "name": store_name, "type": tpl_store.get("type", "ImageMosaic"),
+                "enabled": True, "workspace": {"name": ws}, "url": directory_uri,
+            }},
+        )
+        _gs_require_2xx(resp, f"[{store_name}] создание стора")
+        logger.info(f"  [{store_name}] стор создан → {directory_uri}")
+        created = True
+
+    # Каталог без индекса мозаики (новый год): индекс строит harvest; покрытие
+    # создаётся только после него (иначе у ридера нет ни одного покрытия).
+    if not _index_files_for_year(year):
+        resp = requests.post(
+            f"{store_url}/external.imagemosaic", auth=auth, data=directory_uri,
+            headers={"Content-type": "text/plain"}, timeout=180,
+        )
+        _gs_require_2xx(resp, f"[{store_name}] первичный harvest {directory_uri}")
+        deadline = time.monotonic() + 120
+        while not (GEODATA_DIR / str(year) / f"{year}.properties").exists() and time.monotonic() < deadline:
+            time.sleep(2)
+        if not (GEODATA_DIR / str(year) / f"{year}.properties").exists():
+            raise GeoServerStoreError(f"[{store_name}] индекс мозаики {year}.properties не появился за 120 с")
+
+    cov = {k: tpl_cov[k] for k in _COVERAGE_TEMPLATE_KEYS if k in tpl_cov}
+    cov.update({"name": store_name, "title": store_name, "nativeCoverageName": str(year)})
+    for entry in (cov.get("metadata") or {}).get("entry", []):
+        if isinstance(entry, dict) and entry.get("@key") == "dirName":
+            entry["$"] = store_name  # у образца там имя другого, давно устаревшего стора
+    resp = requests.post(f"{store_url}/coverages", auth=auth, json={"coverage": cov}, timeout=60)
+    _gs_require_2xx(resp, f"[{store_name}] создание покрытия")
+    logger.info(f"  [{store_name}] покрытие создано (nativeCoverageName={year})")
+    created = True
+
+    # Стиль и флаги слоя — с образца (по умолчанию GeoServer ставит стиль 'raster').
+    layer = {}
+    style = tpl_layer.get("defaultStyle") or {}
+    if style.get("name"):
+        sname = style["name"]
+        if ":" not in sname and style.get("workspace"):
+            sname = f"{style['workspace']}:{sname}"
+        layer["defaultStyle"] = {"name": sname}
+    for flag in ("queryable", "opaque"):
+        if flag in tpl_layer:
+            layer[flag] = tpl_layer[flag]
+    if layer:
+        resp = requests.put(
+            f"{GEOSERVER_URL}/rest/layers/{ws}:{store_name}.json", auth=auth,
+            json={"layer": layer}, timeout=30,
+        )
+        _gs_require_2xx(resp, f"[{store_name}] стиль слоя")
+        logger.info(f"  [{store_name}] слой: {layer}")
+    return created
+
+
+def ensure_year_stores(rasters_by_year: dict, auth: tuple | None = None) -> list[str]:
+    """round64: создаёт недостающие сторы ПРОШЛЫХ лет пакета (последний год —
+    основной стор, образец) — до подмены данных БД. Создание не затрагивает
+    существующие слои; при сбое БД и витрина остаются прежними (на диске лишь
+    скопированные растры нового года, которых не видит ни один стор)."""
+    years = sorted(y for y, c in rasters_by_year.items() if c > 0)
+    if len(years) < 2:
+        return []
+    auth = auth or (GEOSERVER_USER, GEOSERVER_PASSWORD)
+    made = []
+    for year in years[:-1]:
+        name = f"{GEOSERVER_COVERAGESTORE}_{year}"
+        if _ensure_year_store(name, year, auth):
+            made.append(name)
+    return made
+
+
 def _reload_one_store(store_name: str, year: int, auth: tuple):
     """Обновляет один ImageMosaic-стор: URL → пересборка индекса → очистка GWC → nativeCoverageName."""
     base = (
@@ -1367,16 +1509,19 @@ def _reload_one_store(store_name: str, year: int, auth: tuple):
         f"/coveragestores/{store_name}"
     )
 
+    # 0. round64: стор года должен существовать (создаётся по образцу
+    # основного стора, если его нет) — раньше 404 на PUT ниже был лишь
+    # предупреждением, и доставка проходила «зелёной» без растра года.
+    _ensure_year_store(store_name, year, auth)
+
     # 1. Обновить URL хранилища
     resp = requests.put(
         f"{base}.json", auth=auth,
         json={"coverageStore": {"url": f"file:///mnt/data/geodata/{year}/", "enabled": True}},
         timeout=30,
     )
-    if resp.status_code == 200:
-        logger.info(f"  [{store_name}] URL → geodata/{year}/")
-    else:
-        logger.warning(f"  [{store_name}] PUT store вернул {resp.status_code}: {resp.text[:200]}")
+    _gs_require_2xx(resp, f"[{store_name}] PUT store")
+    logger.info(f"  [{store_name}] URL → geodata/{year}/")
 
     # 2. Пересобрать каталог гранул (round20, задача 1) — раньше здесь был
     # просто /reset, который не решал проблему (round19).
@@ -1392,10 +1537,8 @@ def _reload_one_store(store_name: str, year: int, auth: tuple):
         json={"coverage": {"nativeCoverageName": str(year)}},
         timeout=30,
     )
-    if resp.status_code == 200:
-        logger.info(f"  [{store_name}] nativeCoverageName → {year}")
-    else:
-        logger.warning(f"  [{store_name}] PUT coverage вернул {resp.status_code}: {resp.text[:200]}")
+    _gs_require_2xx(resp, f"[{store_name}] PUT coverage")
+    logger.info(f"  [{store_name}] nativeCoverageName → {year}")
 
 
 def count_granules_in_index(year: int) -> int | None:
@@ -1597,6 +1740,14 @@ def deliver(zip_path: Path, tracker: "_StepTracker", *,
                 rasters_by_year = {year: len(tifs)}
                 logger.info(f"Legacy: скопировано {len(tifs)} TIF → {dst}")
 
+        # 2а. round64, Р7-а: сторы прошлых лет пакета (image_assessment_<год>) —
+        # создать, если их нет. Шаг стоит после copy_rasters (каталог года уже
+        # на диске), но ДО pg_dump и подмены БД: сбой здесь оставляет БД и
+        # витрину прежними (новые растры лежат на диске и не подключены ни к
+        # одному стору). Ответ GeoServer не 2xx — доставка не ok.
+        tracker.step = "ensure_year_stores"
+        year_stores_created = ensure_year_stores(rasters_by_year)
+
         # 2б. round38, D3: pg_dump боевых таблиц ДО их подмены — единственный
         # путь отката данных (не только по счастливой случайности, как в
         # round38-инциденте). После обеих предполётных проверок (1б, 1в),
@@ -1689,6 +1840,7 @@ def deliver(zip_path: Path, tracker: "_StepTracker", *,
         "seed_gwc_cache": seed_result,
         "healthcheck": healthcheck_result,
         "backup": backup_result,
+        "year_stores_created": year_stores_created,
     }
 
 
