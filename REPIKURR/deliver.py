@@ -355,7 +355,8 @@ def _package_schema_version(sql_path: Path) -> int | None:
 
 def import_vectors(gpkg_path: Path, *, staged: bool = True,
                     shrink_threshold: float = DEFAULT_SHRINK_THRESHOLD,
-                    allow_shrink: bool = False):
+                    allow_shrink: bool = False,
+                    check_years: tuple[int, ...] = ()):
     """Импортирует слои GPKG в PostGIS (agrifields, razgrafka, assessment).
 
     round25, блок B2: по умолчанию (`staged=True`) ogr2ogr пишет во
@@ -454,6 +455,7 @@ def import_vectors(gpkg_path: Path, *, staged: bool = True,
             [layer for layer, _ in layers],
             shrink_threshold=shrink_threshold,
             allow_shrink=allow_shrink,
+            check_years=check_years,
         )
     else:
         logger.info("Векторные данные импортированы (без staging).")
@@ -484,7 +486,8 @@ def _stage_columns(layer: str) -> list[str]:
 
 def _swap_staged_tables(layers: list[str], *,
                          shrink_threshold: float = DEFAULT_SHRINK_THRESHOLD,
-                         allow_shrink: bool = False):
+                         allow_shrink: bool = False,
+                         check_years: tuple[int, ...] = ()):
     """Переносит данные из `<layer>_stage` в боевые таблицы одной
     транзакцией (`TRUNCATE` + `INSERT ... SELECT`) и удаляет staging-
     таблицы. round25, блок B2.
@@ -524,6 +527,12 @@ def _swap_staged_tables(layers: list[str], *,
     `valuation` (заполняется отдельно от импорта, отсутствует у
     `ogr2ogr`). INSERT теперь использует явный список колонок `_stage`
     (устойчиво к любым лишним колонкам цели, не только к `valuation`).
+
+    round66: `check_years` — годы витрины, которые обязаны сохраниться при
+    добавлении нового года: для КАЖДОГО из них строк `assessment_stage` не
+    меньше (1 − shrink_threshold) × строк года на витрине. Сумма строк при
+    добавлении года растёт и потерю старого года не заметила бы. Проверка в
+    той же транзакции, до TRUNCATE; `allow_shrink` её отключает.
     """
     existing = {layer: _table_exists(layer) for layer in layers}
     missing = [layer for layer, exists in existing.items() if not exists]
@@ -585,6 +594,22 @@ BEGIN
 END $$;
 """.strip())
 
+    if not allow_shrink and "assessment" in layers and "assessment" not in missing:
+        for y in sorted(int(y) for y in check_years):
+            statements.append(f"""
+DO $$
+DECLARE
+  stage_count bigint;
+  prod_count bigint;
+BEGIN
+  SELECT count(*) INTO stage_count FROM assessment_stage WHERE year = {y};
+  SELECT count(*) INTO prod_count FROM assessment WHERE year = {y};
+  IF prod_count > 0 AND stage_count < prod_count * {1 - shrink_threshold} THEN
+    RAISE EXCEPTION 'SWAP_ABORT|assessment|year_shrink_{y}|stage=%|prod=%', stage_count, prod_count;
+  END IF;
+END $$;
+""".strip())
+
     truncate_list = ", ".join(layers)
     statements.append(f"TRUNCATE {truncate_list};")
     for layer in layers:
@@ -616,6 +641,9 @@ END $$;
                 "shrink_over_threshold": f"_stage меньше боевой более чем на "
                                           f"{shrink_threshold:.0%} (порог)",
             }.get(reason, reason)
+            if reason.startswith("year_shrink_"):
+                reason_ru = (f"строк года {reason.rsplit('_', 1)[1]} в _stage меньше, чем на витрине, "
+                             f"более чем на {shrink_threshold:.0%} (порог, проверка по годам при добавлении года)")
             message = (
                 f"Перенос из _stage отменён (round26, B1): слой '{layer}' — "
                 f"{reason_ru}. _stage={stage_n} строк, боевая={prod_n} строк. "
@@ -744,44 +772,80 @@ def backup_before_swap(retention_count: int = DEFAULT_BACKUP_RETENTION) -> dict 
     }
 
 
-def _check_year_composition(manifest_years: list[int], *, allow_year_change: bool = False):
+def _classify_year_change(live_years: set[int], pkg_years: set[int]) -> tuple[str, list[int], str]:
+    """round66: чистое правило сравнения наборов лет (без БД).
+
+    Возвращает (вид, добавленные_годы, причина_отказа):
+      "none"     — набор не изменился или сравнивать не с чем (L пусто);
+      "appended" — L ⊂ P строго и все новые годы больше max(L);
+      "reject"   — иное; причина_отказа — какое условие нарушено.
+    """
+    if not live_years or pkg_years == live_years:
+        return "none", [], ""
+    missing = sorted(live_years - pkg_years)
+    if missing:
+        return "reject", [], f"в пакете нет годов, которые есть на витрине: {missing}"
+    added = sorted(pkg_years - live_years)
+    if min(added) <= max(live_years):
+        return "reject", added, (
+            f"добавлены годы {added}, не позже последнего года витрины "
+            f"({max(live_years)}): допустимо добавлять только годы после последнего"
+        )
+    return "appended", added, ""
+
+
+def _check_year_composition(manifest_years: list[int], *, allow_year_change: bool = False) -> dict:
     """round38, блок D2: предполётная проверка СОСТАВА, не объёма.
 
     Инцидент round37/38: боевые таблицы заменились пакетом с ДРУГИМ
     набором лет (2023/2024/2025 вместо одного текущего 2025), при этом
     числа строк не усохли (SwapGuardError, round26, молчал — строк стало
-    БОЛЬШЕ). Здесь сверяется НАБОР лет, а не количество: если набор лет
-    в пакете (`manifest["years"]`) отличается от набора лет, уже стоящих
-    на боевой `assessment`, доставка отменяется ДО первого изменения
-    БД/растров/GeoServer — тот же принцип, что и `SwapGuardError`, тем же
-    способом обхода: явный флаг `--allow-year-change` для легитимного
-    случая (например, первая доставка нового года).
+    БОЛЬШЕ). Здесь сверяется НАБОР лет, а не количество: доставка
+    отменяется ДО первого изменения БД/растров/GeoServer — тот же
+    принцип, что и `SwapGuardError`, тем же способом обхода: явный флаг
+    `--allow-year-change`.
+
+    round66: штатное добавление нового расчётного года (пакет = годы
+    витрины + годы строго позже последнего) проходит само, иначе кнопка
+    панели не доставляла бы пакет каждый новый год (round65, раздел 10).
+    Пропавший год, год раньше или внутри набора, чужой набор — отказ, как
+    раньше (инцидент 37/38: L={2025}, P={2023,2024,2025} — отказ, новые
+    годы меньше max(L)).
 
     Если боевая таблица `assessment` ещё не существует (первая доставка
     на пустую БД, round28 E) — сравнивать не с чем, проверка молча
     пропускается.
+
+    Возвращает {"year_change": "none" | "appended [N]" | "overridden",
+    "appended": [...], "live_years": [...]} — для статуса доставки и для
+    проверки усадки по годам в `_swap_staged_tables`.
     """
     if allow_year_change:
         logger.info("--allow-year-change: проверка состава лет пропущена.")
-        return
+        return {"year_change": "overridden", "appended": [], "live_years": []}
     exists = _run_psql("SELECT 1 FROM pg_class WHERE relname = 'assessment' AND relkind = 'r';").strip()
     if exists != "1":
         logger.info("Боевая таблица 'assessment' ещё не существует — сравнивать не с чем.")
-        return
+        return {"year_change": "none", "appended": [], "live_years": []}
     live_years_raw = _run_psql("SELECT DISTINCT year FROM assessment ORDER BY year;").strip()
     live_years = {int(y) for y in live_years_raw.splitlines() if y.strip()}
     pkg_years = {int(y) for y in manifest_years}
-    if live_years and pkg_years != live_years:
+    kind, added, why = _classify_year_change(live_years, pkg_years)
+    if kind == "reject":
         message = (
             f"Доставка отменена (round38, D2): набор лет в пакете "
-            f"{sorted(pkg_years)} отличается от набора лет на витрине "
-            f"{sorted(live_years)}. Боевые таблицы НЕ тронуты. Если это "
-            f"ожидаемо (например, добавляется новый год) — перезапустите "
-            f"с --allow-year-change."
+            f"{sorted(pkg_years)} не является добавлением нового года к набору "
+            f"на витрине {sorted(live_years)}: {why}. Боевые таблицы НЕ "
+            f"тронуты. Если это ожидаемо — перезапустите с --allow-year-change."
         )
         logger.error(message)
         raise YearCompositionGuardError(message)
+    if kind == "appended":
+        logger.info(f"Добавление нового года: витрина {sorted(live_years)} + {added} "
+                    f"(year_change: appended {added}).")
+        return {"year_change": f"appended {added}", "appended": added, "live_years": sorted(live_years)}
     logger.info(f"Состав лет пакета совпадает с боевым: {sorted(pkg_years)}.")
+    return {"year_change": "none", "appended": [], "live_years": sorted(live_years)}
 
 
 # round27, A2: версия схемы объектов assessment_ready/levelsagg_ready,
@@ -1660,6 +1724,8 @@ class _StepTracker:
         # провенанс попал в статус-файл даже при падении на ЛЮБОМ шаге
         # после unpack, не только при полном успехе.
         self.manifest: dict | None = None
+        # round66: результат проверки состава лет (для статуса при падении позже).
+        self.year_change: str | None = None
         self._write_intermediate()
 
     @property
@@ -1722,7 +1788,9 @@ def deliver(zip_path: Path, tracker: "_StepTracker", *,
         # 1в. round38, блок D2: предполётная проверка состава лет — до
         # ЛЮБОГО изменения БД/растров, тем же принципом, что 1б выше.
         tracker.step = "check_year_composition"
-        _check_year_composition(manifest.get("years", [year]), allow_year_change=allow_year_change)
+        year_change = _check_year_composition(manifest.get("years", [year]),
+                                              allow_year_change=allow_year_change)
+        tracker.year_change = year_change["year_change"]
 
         # 2. Растры (все годы из пакета)
         tracker.step = "copy_rasters"
@@ -1760,7 +1828,8 @@ def deliver(zip_path: Path, tracker: "_StepTracker", *,
         # сохраняет OID боевых таблиц и не роняет assessment_ready)
         tracker.step = "import_vectors"
         import_vectors(tmp / "vectors.gpkg", shrink_threshold=shrink_threshold,
-                        allow_shrink=allow_shrink)
+                        allow_shrink=allow_shrink,
+                        check_years=tuple(year_change["live_years"]) if year_change["appended"] else ())
 
         # 3б. Ограничение, которое ogr2ogr -overwrite не сохраняет (round19/round20 задача 7)
         tracker.step = "ensure_unique_constraint"
@@ -1841,6 +1910,7 @@ def deliver(zip_path: Path, tracker: "_StepTracker", *,
         "healthcheck": healthcheck_result,
         "backup": backup_result,
         "year_stores_created": year_stores_created,
+        "year_change": year_change["year_change"],
     }
 
 
@@ -1871,7 +1941,9 @@ def write_status(zip_name: str, started_at: datetime, finished_at: datetime,
                   healthcheck: dict | None = None,
                   seed_gwc_cache: dict | None = None,
                   manifest: dict | None = None,
-                  backup: dict | None = None):
+                  backup: dict | None = None,
+                  year_change: str | None = None,
+                  year_stores_created: list | None = None):
     """Пишет статус доставки, который PushTask опрашивает по ssh (round19: до
     этого отправляющая сторона не знала, дошла ли доставка до конца).
     Пишется всегда — и при успехе, и при падении на любом шаге."""
@@ -1902,6 +1974,11 @@ def write_status(zip_name: str, started_at: datetime, finished_at: datetime,
         "manifest": manifest,
         # round38, D3: результат pg_dump боевых таблиц перед подменой.
         "backup": backup,
+        # round66: "none" | "appended [N]" | "overridden" (--allow-year-change);
+        # None — доставка упала раньше проверки состава лет.
+        "year_change": year_change,
+        # round64/66: сторы image_assessment_<год>, созданные этой доставкой.
+        "year_stores_created": year_stores_created,
     }
     path = STATUS_DIR / f"{zip_name}.json"
     tmp_path = path.with_suffix(".json.tmp")
@@ -2064,6 +2141,7 @@ def main():
     healthcheck_result = None
     seed_result = None
     backup_result = None
+    year_stores_created = None
     try:
         result = deliver(zip_path, tracker, shrink_threshold=args.shrink_threshold,
                           allow_shrink=args.allow_shrink,
@@ -2073,6 +2151,7 @@ def main():
         healthcheck_result = result.get("healthcheck")
         seed_result = result.get("seed_gwc_cache")
         backup_result = result.get("backup")
+        year_stores_created = result.get("year_stores_created")
         ok = True
     except Exception as e:
         error_msg = str(e)
@@ -2088,6 +2167,8 @@ def main():
             seed_gwc_cache=seed_result,
             manifest=tracker.manifest,
             backup=backup_result,
+            year_change=tracker.year_change,
+            year_stores_created=year_stores_created,
         )
 
     if not ok:

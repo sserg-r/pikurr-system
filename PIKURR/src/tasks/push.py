@@ -169,9 +169,15 @@ class PushTask:
 
         status = self._poll_status(package, not_before=push_started)
         if not status.get('ok'):
+            hint = ""
+            if status.get('step_failed') == 'check_year_composition':
+                hint = (
+                    "\nНабор лет пакета не является добавлением нового года к данным "
+                    "на сервере. Обратитесь к администратору; ручная доставка — ОП, раздел 3."
+                )
             raise RuntimeError(
                 f"Доставка {package.name} на сервере завершилась с ошибкой "
-                f"(шаг: {status.get('step_failed')}): {status.get('error')}"
+                f"(шаг: {status.get('step_failed')}): {status.get('error')}{hint}"
             )
 
         logger.info(
